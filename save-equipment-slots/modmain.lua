@@ -1,7 +1,8 @@
 -- GLOBAL.CHEATS_ENABLED = true
 -- GLOBAL.require('debugkeys')
 
-local slots = {} -- Dictionary of name => slot
+local slots = {} -- item name => saved item slot
+local last_equipped_item = nil
 
 local function GetSlot(item)
   return slots[item.name]
@@ -73,6 +74,9 @@ local function Inventory_OnItemGet(inst, data)
   end
 
   -- Store equipment slot
+  -- TODO: Recognize whether or not this is a manual action by the player
+  -- If not (e.g., triggered through a GiveItem in GetNextAvailableSlot)
+  -- we should NOT set the slot here.
   SetSlot(item, slot)
 end
 
@@ -86,10 +90,15 @@ local function Inventory_GetNextAvailableSlot(original_fn)
 
     local blocking_item = self:GetItemInSlot(saved_slot)
     if blocking_item then
-      -- If blocking_item is equipment which is currently in its
-      -- preferred slot, we are not going to move it away for this new
-      -- equipment that's coming in. Instead, we will move the new item
-      local move_blocking_item = not IsEquipment(blocking_item) or GetSlot(blocking_item) ~= saved_slot
+      -- If the item was equipped and is now in the process of becoming
+      -- unequipped we always place it back into its saved slot.
+      local was_equipped = last_equipped_item == item
+
+      -- blocking_item is moved if any of these conditions is true
+      -- 1) the new item was just unequipped
+      -- 2) blocking_item is not equipment
+      -- 3) blocking_item is not in its saved slot
+      local move_blocking_item = was_equipped or not IsEquipment(blocking_item) or GetSlot(blocking_item) ~= saved_slot
 
       -- If we are not moving the blocking_item at all we will let the game decide where to put the
       -- new equipment.
@@ -102,7 +111,8 @@ local function Inventory_GetNextAvailableSlot(original_fn)
       -- otherwise the game would not move blocking_item at all,
       -- presumably as it is already present in the inventory
       self.itemslots[saved_slot] = item
-      self:GiveItem(blocking_item)
+      -- Find a new slot for the blocking item -- skipping the sound
+      self:GiveItem(blocking_item, nil, nil, true)
       -- We clear the saved_slot again, as the game will be putting
       -- item in there at a slightly later time, not right now
       self.itemslots[saved_slot] = nil
@@ -139,7 +149,10 @@ local function InventoryPostInit(self)
   self.OnSave = Inventory_OnSave(self.OnSave)
 end
 
-local function Equippable_OnEquip(inst, data)
+local function Equippable_OnEquipped(inst, data)
+  print("equipped " .. inst.name)
+  last_equipped_item = inst
+
   -- There is a strange bug in the base
   -- game where equipment that has ever been in
   -- your backpack will go straight back to the backback
@@ -150,11 +163,20 @@ local function Equippable_OnEquip(inst, data)
   -- We will fix this here by simply clearing the item's prevcontainer
   -- whenever it is equipped, which would point to the backpack when it was ever in there.
   inst.prevcontainer = nil
+
+  -- We also clear the item's prevslot to prevent the game from trying
+  -- to put it there when unequipping the item, as this is not always
+  -- what we would want when we have multiple copies of an equipment.
+  -- For example, when we have assigned the Axe to slot 2 but have picked up
+  -- a second copy that is now stored in slot 3, we do not want the game
+  -- to try to put it back directly to slot 3 when unequipping, as slot 2
+  -- might be available at that time. The game bypasses the GetNextAvailableSlot()
+  -- function when prevslot has a value and is available, so we clear it here.
   inst.prevslot = nil
 end
 
 local function EquippablePostInit(self)
-  self.inst:ListenForEvent("equipped", Equippable_OnEquip)
+  self.inst:ListenForEvent("equipped", Equippable_OnEquipped)
 end
 
 local function InitSaveEquipmentSlots()

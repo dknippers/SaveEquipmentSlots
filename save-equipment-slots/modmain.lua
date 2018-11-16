@@ -4,6 +4,15 @@
 local slots = {} -- item name => saved item slot
 local last_equipped_item = nil
 
+-- when unequipping / obtaining a piece of equipment,
+-- we sometimes rearrange other items to put the new item
+-- in its saved slot. when this relocation process is underway
+-- (i.e., rearranging > 0), we will not be changing any of
+-- the saved slots, as the player is not manually moving anything.
+-- this is a number as it can be going on for more than 1
+-- item at a time through recursive calls to
+local rearranging = 0
+
 local function GetSlot(item)
   return slots[item.name]
 end
@@ -73,11 +82,13 @@ local function Inventory_OnItemGet(inst, data)
     end
   end
 
-  -- Store equipment slot
-  -- TODO: Recognize whether or not this is a manual action by the player
-  -- If not (e.g., triggered through a GiveItem in GetNextAvailableSlot)
-  -- we should NOT set the slot here.
-  SetSlot(item, slot)
+  -- Store equipment slot, only when not in the process of
+  -- automatically rearranging items triggered by some other action.
+  -- TODO: Additionally, detect if this was an explicit move
+  -- of the player and not a pickup action or something like that
+  if rearranging == 0 then
+    SetSlot(item, slot)
+  end
 end
 
 local function Inventory_GetNextAvailableSlot(original_fn)
@@ -111,8 +122,12 @@ local function Inventory_GetNextAvailableSlot(original_fn)
       -- otherwise the game would not move blocking_item at all,
       -- presumably as it is already present in the inventory
       self.itemslots[saved_slot] = item
+
       -- Find a new slot for the blocking item -- skipping the sound
+      rearranging = rearranging + 1
       self:GiveItem(blocking_item, nil, nil, true)
+      rearranging = rearranging - 1
+
       -- We clear the saved_slot again, as the game will be putting
       -- item in there at a slightly later time, not right now
       self.itemslots[saved_slot] = nil
@@ -150,7 +165,6 @@ local function InventoryPostInit(self)
 end
 
 local function Equippable_OnEquipped(inst, data)
-  print("equipped " .. inst.name)
   last_equipped_item = inst
 
   -- There is a strange bug in the base

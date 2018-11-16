@@ -1,8 +1,17 @@
 -- GLOBAL.CHEATS_ENABLED = true
 -- GLOBAL.require('debugkeys')
 
-local slots = {} -- item name => saved item slot
-local last_equipped_item = nil
+-- item.name => saved item slot
+local slots = {}
+
+-- equipslot (EQUIPSLOTS.HANDS / EQUIPSLOTS.HEAD / EQUIPSLOTS.BODY) => item
+local last_equipped_item = {}
+
+-- the equipment which is currently the active item
+local active_equipment = nil
+
+-- the item that is currently eligible for its slot to be changed
+local set_slot_candidate = nil
 
 -- when unequipping / obtaining a piece of equipment,
 -- we sometimes rearrange other items to put the new item
@@ -27,6 +36,7 @@ local function ClearSlot(item)
 end
 
 local function GetItemOwnerGuid(item)
+  -- TODO: Just use InventoryItem:GetGrandOwner()
   if not item or not item.components or not item.components.inventoryitem or not item.components.inventoryitem.owner then
     return nil
   end
@@ -78,16 +88,35 @@ local function Inventory_OnItemGet(inst, data)
   if saved_slot then
     local existing_item = inst.components.inventory:GetItemInSlot(saved_slot)
     if existing_item and existing_item.name == item.name then
+      set_slot_candidate = nil
       return
     end
   end
 
   -- Store equipment slot, only when not in the process of
-  -- automatically rearranging items triggered by some other action.
-  -- TODO: Additionally, detect if this was an explicit move
-  -- of the player and not a pickup action or something like that
-  if rearranging == 0 then
+  -- automatically rearranging items triggered by some other action,
+  -- and if the item is a candidate for the set slot action.
+  if rearranging == 0 and set_slot_candidate == item then
     SetSlot(item, slot)
+    set_slot_candidate = nil
+  end
+end
+
+local function Inventory_OnNewActiveItem(inst, data)
+  local item = data.item
+
+  if active_equipment ~= nil then
+    set_slot_candidate = active_equipment
+  end
+
+  if item == nil then
+    active_equipment = nil
+  else
+    if IsEquipment(item) then
+      active_equipment = item
+    else
+      active_equipment = nil
+    end
   end
 end
 
@@ -103,7 +132,8 @@ local function Inventory_GetNextAvailableSlot(original_fn)
     if blocking_item then
       -- If the item was equipped and is now in the process of becoming
       -- unequipped we always place it back into its saved slot.
-      local was_equipped = last_equipped_item == item
+      local equipslot = GetEquipSlot(item)
+      local was_equipped = equipslot and last_equipped_item[equipslot] == item
 
       -- blocking_item is moved if any of these conditions is true
       -- 1) the new item was just unequipped
@@ -159,13 +189,19 @@ end
 
 local function InventoryPostInit(self)
   self.inst:ListenForEvent("itemget", Inventory_OnItemGet)
+  self.inst:ListenForEvent("dropitem", function(inst, data) set_slot_candidate = nil end)
+  self.inst:ListenForEvent("newactiveitem", Inventory_OnNewActiveItem)
   self.GetNextAvailableSlot = Inventory_GetNextAvailableSlot(self.GetNextAvailableSlot)
   self.OnLoad = Inventory_OnLoad(self.OnLoad)
   self.OnSave = Inventory_OnSave(self.OnSave)
 end
 
 local function Equippable_OnEquipped(inst, data)
-  last_equipped_item = inst
+  local equipslot = GetEquipSlot(inst)
+  if equipslot then
+    last_equipped_item[equipslot] = inst
+    set_slot_candidate = nil
+  end
 
   -- There is a strange bug in the base
   -- game where equipment that has ever been in

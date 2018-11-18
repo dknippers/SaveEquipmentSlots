@@ -5,13 +5,27 @@
 local slots = {}
 
 -- equipslot (EQUIPSLOTS.HANDS / EQUIPSLOTS.HEAD / EQUIPSLOTS.BODY) => item
+-- we use this information to give priority to a piece of equipment that is moved back
+-- after being equipped. it will then always go back to its slot, even if another copy
+-- of the same item is there currently. this is to assure you will always exhaust
+-- one of your copies of one type of equipment first, rather than switching to a 100% one after
+-- swapping equipment a few times.
 local last_equipped_item = {}
 
--- the equipment which is currently the active item
-local active_equipment = nil
+-- the equipment that was just manually moved by the player
+-- by dragging it into a new inventory slot. this is used to determine
+-- whether an item's slot should be updated when the inventory reports it
+-- as a new item.
+local manually_moved_equipment = nil
 
--- the item that is currently eligible for its slot to be changed
-local set_slot_candidate = nil
+-- entity to run tasks with, necessary to gain access to DoTaskInTime()
+local tasker = GLOBAL.CreateEntity()
+
+-- functions to be executed later, in insertion order (DoTaskInTime() does not guarantee the order)
+local fns = {}
+
+-- set to true when RunFns() has been scheduled to run using DoTaskInTime()
+local runfns_scheduled = false
 
 -- when unequipping / obtaining a piece of equipment,
 -- we sometimes rearrange other items to put the new item
@@ -62,6 +76,28 @@ local function GetEquipSlot(item)
   return item.components.equippable.equipslot
 end
 
+-- Runs all functions in the fns table and removes them after
+local function RunFns()
+  for i, fn in ipairs(fns) do
+    fn()
+    fns[i] = nil
+  end
+end
+
+-- Queues the specified function to be run after the currently
+-- active coroutine has yielded
+local function QueueFn(fn)
+  table.insert(fns, fn)
+
+  if not runfns_scheduled then
+    runfns_scheduled = true
+    tasker:DoTaskInTime(0, function()
+      RunFns()
+      runfns_scheduled = false
+    end)
+  end
+end
+
 local function Inventory_OnItemGet(inst, data)
   local item = data.item
   local slot = data.slot
@@ -82,7 +118,6 @@ local function Inventory_OnItemGet(inst, data)
   if saved_slot then
     local existing_item = inst.components.inventory:GetItemInSlot(saved_slot)
     if existing_item and existing_item.name == item.name then
-      set_slot_candidate = nil
       return
     end
   end
@@ -90,28 +125,28 @@ local function Inventory_OnItemGet(inst, data)
   -- Store equipment slot, only when not in the process of
   -- automatically rearranging items triggered by some other action,
   -- and if the item is a candidate for the set slot action.
-  if rearranging == 0 and set_slot_candidate == item then
+  if rearranging == 0 and manually_moved_equipment == item then
     SetSlot(item, slot)
-    set_slot_candidate = nil
   end
 end
 
 local function Inventory_OnNewActiveItem(inst, data)
   local item = data.item
 
-  if active_equipment ~= nil then
-    set_slot_candidate = active_equipment
-  end
-
-  if item == nil then
-    active_equipment = nil
-  else
+  -- Logic itself is queued until all actions are resolved,
+  -- this is necessary as the active item is first removed before
+  -- it's being put in the inventory, and we do not want to clear the manually_moved_equipment
+  -- before that has happened. QueueFn will guarantee we first wait for the current
+  -- chain of events to finish.
+  QueueFn(function()
     if IsEquipment(item) then
-      active_equipment = item
+      manually_moved_equipment = item
     else
-      active_equipment = nil
+      if manually_moved_equipment then
+        manually_moved_equipment = nil
+      end
     end
-  end
+  end)
 end
 
 local function Inventory_GetNextAvailableSlot(original_fn)
@@ -183,7 +218,6 @@ end
 
 local function InventoryPostInit(self)
   self.inst:ListenForEvent("itemget", Inventory_OnItemGet)
-  self.inst:ListenForEvent("dropitem", function(inst, data) set_slot_candidate = nil end)
   self.inst:ListenForEvent("newactiveitem", Inventory_OnNewActiveItem)
   self.GetNextAvailableSlot = Inventory_GetNextAvailableSlot(self.GetNextAvailableSlot)
   self.OnLoad = Inventory_OnLoad(self.OnLoad)
@@ -191,10 +225,13 @@ local function InventoryPostInit(self)
 end
 
 local function Equippable_OnEquipped(inst, data)
+  if not IsEquipment(inst) then
+    return
+  end
+
   local equipslot = GetEquipSlot(inst)
   if equipslot then
     last_equipped_item[equipslot] = inst
-    set_slot_candidate = nil
   end
 
   -- There is a strange bug in the base

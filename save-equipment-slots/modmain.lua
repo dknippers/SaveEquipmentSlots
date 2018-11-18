@@ -55,21 +55,25 @@ local function GetItemOwner(item)
   end
 end
 
--- Specifies if `item` is equipment usable by the player (i.e., it is equipment and not owned by the enemy)
+-- Specifies if `item` is equipment
 local function IsEquipment(item)
-  local player = GLOBAL.GetPlayer()
-  local item_owner = GetItemOwner(item)
+  return item and item.components and item.components.equippable
+end
 
-  return
-    item and
-    item.name and -- We use name as the key
-    item.components and
-    item.components.equippable and
-    (not item_owner or item_owner == player)
+-- Specifies if `item` is equipment owned by the player
+local function IsPlayerEquipment(item)
+  if not IsEquipment(item) then
+    return false
+  end
+
+  local player = GLOBAL.GetPlayer()
+  local owner = GetItemOwner(item)
+
+  return player == owner
 end
 
 local function GetEquipSlot(item)
-  if not IsEquipment(item) then
+  if not IsPlayerEquipment(item) then
     return nil
   end
 
@@ -102,7 +106,7 @@ local function Inventory_OnItemGet(inst, data)
   local item = data.item
   local slot = data.slot
 
-  if not IsEquipment(item) or not slot then
+  if not IsPlayerEquipment(item) or not slot then
     return
   end
 
@@ -139,7 +143,7 @@ local function Inventory_OnNewActiveItem(inst, data)
   -- before that has happened. QueueFn will guarantee we first wait for the current
   -- chain of events to finish.
   QueueFn(function()
-    if IsEquipment(item) then
+    if IsPlayerEquipment(item) then
       manually_moved_equipment = item
     else
       if manually_moved_equipment then
@@ -153,7 +157,7 @@ local function Inventory_GetNextAvailableSlot(original_fn)
   return function(self, item)
     local saved_slot = GetSlot(item)
 
-    if not saved_slot or not IsEquipment(item) then
+    if not saved_slot or not IsPlayerEquipment(item) then
       return original_fn(self, item)
     end
 
@@ -168,7 +172,7 @@ local function Inventory_GetNextAvailableSlot(original_fn)
       -- 1) the new item was just unequipped
       -- 2) blocking_item is not equipment
       -- 3) blocking_item is not in its saved slot
-      local move_blocking_item = was_equipped or not IsEquipment(blocking_item) or GetSlot(blocking_item) ~= saved_slot
+      local move_blocking_item = was_equipped or not IsPlayerEquipment(blocking_item) or GetSlot(blocking_item) ~= saved_slot
 
       -- If we are not moving the blocking_item at all we will let the game decide where to put the
       -- new equipment.
@@ -225,7 +229,7 @@ local function InventoryPostInit(self)
 end
 
 local function Equippable_OnEquipped(inst, data)
-  if not IsEquipment(inst) then
+  if not IsPlayerEquipment(inst) then
     return
   end
 

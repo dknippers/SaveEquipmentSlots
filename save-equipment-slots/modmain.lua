@@ -60,20 +60,8 @@ local function IsEquipment(item)
   return item and item.components and item.components.equippable
 end
 
--- Specifies if `item` is equipment owned by the player
-local function IsPlayerEquipment(item)
-  if not IsEquipment(item) then
-    return false
-  end
-
-  local player = GLOBAL.GetPlayer()
-  local owner = GetItemOwner(item)
-
-  return player == owner
-end
-
 local function GetEquipSlot(item)
-  if not IsPlayerEquipment(item) then
+  if not IsEquipment(item) then
     return nil
   end
 
@@ -102,11 +90,45 @@ local function QueueFn(fn)
   end
 end
 
+local function Inventory_OnEquip(inst, data)
+  local item = data.item
+  local eslot = data.eslot
+
+  if not IsEquipment(item) then
+    return
+  end
+
+  if eslot then
+    last_equipped_item[eslot] = item
+  end
+
+  -- There is a strange bug in the base
+  -- game where equipment that has ever been in
+  -- your backpack will go straight back to the backback
+  -- when unequipped, even if you have put it in your regular
+  -- inventory afterwards. This is different from the behavior
+  -- without a backpack, the game will (even without this mod)
+  -- always try to put equipment back where it came from.
+  -- We will fix this here by simply clearing the item's prevcontainer
+  -- whenever it is equipped, which would point to the backpack when it was ever in there.
+  item.prevcontainer = nil
+
+  -- We also clear the item's prevslot to prevent the game from trying
+  -- to put it there when unequipping the item, as this is not always
+  -- what we would want when we have multiple copies of an equipment.
+  -- For example, when we have assigned the Axe to slot 2 but have picked up
+  -- a second copy that is now stored in slot 3, we do not want the game
+  -- to try to put it back directly to slot 3 when unequipping, as slot 2
+  -- might be available at that time. The game bypasses the GetNextAvailableSlot()
+  -- function when prevslot has a value and is available, so we clear it here.
+  item.prevslot = nil
+end
+
 local function Inventory_OnItemGet(inst, data)
   local item = data.item
   local slot = data.slot
 
-  if not IsPlayerEquipment(item) or not slot then
+  if not IsEquipment(item) or not slot then
     return
   end
 
@@ -143,7 +165,7 @@ local function Inventory_OnNewActiveItem(inst, data)
   -- before that has happened. QueueFn will guarantee we first wait for the current
   -- chain of events to finish.
   QueueFn(function()
-    if IsPlayerEquipment(item) then
+    if IsEquipment(item) then
       manually_moved_equipment = item
     else
       if manually_moved_equipment then
@@ -157,7 +179,7 @@ local function Inventory_GetNextAvailableSlot(original_fn)
   return function(self, item)
     local saved_slot = GetSlot(item)
 
-    if not saved_slot or not IsPlayerEquipment(item) then
+    if not saved_slot or not IsEquipment(item) then
       return original_fn(self, item)
     end
 
@@ -172,7 +194,7 @@ local function Inventory_GetNextAvailableSlot(original_fn)
       -- 1) the new item was just unequipped
       -- 2) blocking_item is not equipment
       -- 3) blocking_item is not in its saved slot
-      local move_blocking_item = was_equipped or not IsPlayerEquipment(blocking_item) or GetSlot(blocking_item) ~= saved_slot
+      local move_blocking_item = was_equipped or not IsEquipment(blocking_item) or GetSlot(blocking_item) ~= saved_slot
 
       -- If we are not moving the blocking_item at all we will let the game decide where to put the
       -- new equipment.
@@ -221,52 +243,20 @@ local function Inventory_OnSave(original_fn)
 end
 
 local function InventoryPostInit(self)
-  self.inst:ListenForEvent("itemget", Inventory_OnItemGet)
-  self.inst:ListenForEvent("newactiveitem", Inventory_OnNewActiveItem)
-  self.GetNextAvailableSlot = Inventory_GetNextAvailableSlot(self.GetNextAvailableSlot)
-  self.OnLoad = Inventory_OnLoad(self.OnLoad)
-  self.OnSave = Inventory_OnSave(self.OnSave)
-end
+  local player = GLOBAL.GetPlayer()
 
-local function Equippable_OnEquipped(inst, data)
-  if not IsPlayerEquipment(inst) then
-    return
+  if player.components.inventory == self then
+    self.inst:ListenForEvent("equip", Inventory_OnEquip)
+    self.inst:ListenForEvent("itemget", Inventory_OnItemGet)
+    self.inst:ListenForEvent("newactiveitem", Inventory_OnNewActiveItem)
+    self.GetNextAvailableSlot = Inventory_GetNextAvailableSlot(self.GetNextAvailableSlot)
+    self.OnLoad = Inventory_OnLoad(self.OnLoad)
+    self.OnSave = Inventory_OnSave(self.OnSave)
   end
-
-  local equipslot = GetEquipSlot(inst)
-  if equipslot then
-    last_equipped_item[equipslot] = inst
-  end
-
-  -- There is a strange bug in the base
-  -- game where equipment that has ever been in
-  -- your backpack will go straight back to the backback
-  -- when unequipped, even if you have put it in your regular
-  -- inventory afterwards. This is different from the behavior
-  -- without a backpack, the game will (even without this mod)
-  -- always try to put equipment back where it came from.
-  -- We will fix this here by simply clearing the item's prevcontainer
-  -- whenever it is equipped, which would point to the backpack when it was ever in there.
-  inst.prevcontainer = nil
-
-  -- We also clear the item's prevslot to prevent the game from trying
-  -- to put it there when unequipping the item, as this is not always
-  -- what we would want when we have multiple copies of an equipment.
-  -- For example, when we have assigned the Axe to slot 2 but have picked up
-  -- a second copy that is now stored in slot 3, we do not want the game
-  -- to try to put it back directly to slot 3 when unequipping, as slot 2
-  -- might be available at that time. The game bypasses the GetNextAvailableSlot()
-  -- function when prevslot has a value and is available, so we clear it here.
-  inst.prevslot = nil
-end
-
-local function EquippablePostInit(self)
-  self.inst:ListenForEvent("equipped", Equippable_OnEquipped)
 end
 
 local function InitSaveEquipmentSlots()
   AddComponentPostInit("inventory", InventoryPostInit)
-  AddComponentPostInit("equippable", EquippablePostInit)
 end
 
 InitSaveEquipmentSlots()

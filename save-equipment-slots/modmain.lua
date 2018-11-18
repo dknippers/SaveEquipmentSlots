@@ -35,29 +35,23 @@ local function ClearSlot(item)
   slots[item.name] = nil
 end
 
-local function GetItemOwnerGuid(item)
-  -- TODO: Just use InventoryItem:GetGrandOwner()
-  if not item or not item.components or not item.components.inventoryitem or not item.components.inventoryitem.owner then
-    return nil
+local function GetItemOwner(item)
+  if item and item.components and item.components.inventoryitem then
+    return item.components.inventoryitem:GetGrandOwner()
   end
-
-  local owner = item.components.inventoryitem.owner
-  -- In the case of a backpack item, the player GUID is actually
-  -- the parent GUID rather than the owner GUID...
-  return owner.parent and owner.parent.GUID or owner.GUID
 end
 
 -- Specifies if `item` is equipment usable by the player (i.e., it is equipment and not owned by the enemy)
 local function IsEquipment(item)
   local player = GLOBAL.GetPlayer()
-  local item_guid = GetItemOwnerGuid(item)
+  local item_owner = GetItemOwner(item)
 
   return
     item and
     item.name and -- We use name as the key
     item.components and
     item.components.equippable and
-    (not item_guid or item_guid == player.GUID)
+    (not item_owner or item_owner == player)
 end
 
 local function GetEquipSlot(item)

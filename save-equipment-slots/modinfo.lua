@@ -1,19 +1,15 @@
 name = "Save Equipment Slots"
-
-description = "Saves the inventory slots of equipment items after equipping them. For example, equipping the Axe from inventory slot 4 will always return it to slot 4 when unequipping. When slot 4 is occupied it will be resolved accordingly."
-
-author = "Daniël Knippers"
-
-version = "0.1"
-
-api_version = 1
+description = "Saves the inventory slots of equipment and makes sure equipment always returns to their saved slot. If a saved slot is occupied items will be rearranged automatically to make space."
+author = "dani"
+version = "1.0.0"
+forumthread = ""
+api_version = 6
 
 dont_starve_compatible = true
 reign_of_giants_compatible = true
 shipwrecked_compatible = true
 
 restart_required = false
-
 standalone = false
 
 icon_atlas = "modicon.xml"

@@ -1,8 +1,15 @@
 -- GLOBAL.CHEATS_ENABLED = true
 -- GLOBAL.require('debugkeys')
 
+local Image = GLOBAL.require("widgets/image")
+local Inv = GLOBAL.require("widgets/inventorybar")
+local InvSlot = GLOBAL.require("widgets/invslot")
+
 -- item.name => saved item slot
 local slots = {}
+
+-- item.name => image widget of item
+local images = {}
 
 -- equipslot (EQUIPSLOTS.HANDS / EQUIPSLOTS.HEAD / EQUIPSLOTS.BODY) => item
 -- we use this information to give priority to a piece of equipment that is moved back
@@ -36,17 +43,95 @@ local runfns_scheduled = false
 -- item at a time through recursive calls to
 local rearranging = 0
 
+-- Returns the items per inventory slot,
+-- essentially the inverse of the `slots` table
+local function GetItemsInSlots()
+  local items = {}
+
+  for name, slot in pairs(slots) do
+    if not items[slot] then
+      items[slot] = {}
+    end
+
+    table.insert(items[slot], name)
+  end
+
+  return items
+end
+
+-- Returns the amount of items present in the given slot
+local function GetItemCount(slot)
+  local items = GetItemsInSlots()
+  if items and items[slot] then
+    return #items[slot]
+   else
+    return 0
+  end
+end
+
+local function CreateItemImage(item)
+  local image = Image(item.components.inventoryitem:GetAtlas(),item.components.inventoryitem:GetImage())
+  image:SetScale(0.5, 0.5, 0.5)
+  image:Show()
+  return image
+end
+
+local function UpdateItemImage(item, slot)
+  local image = images[item.name]
+  if not image then
+    image = CreateItemImage(item)
+    images[item.name] = image
+  end
+
+  local player = GLOBAL.GetPlayer()
+  local inventorybar = player.HUD.controls.inv
+  local invslot = inventorybar:GetSlotWidget(slot)
+  if invslot then
+    local pos = invslot:GetWorldPosition()
+    if pos then
+      local height = invslot:GetHeight()
+      if height then
+        local itemcount = GetItemCount(slot)
+
+        local multiplier = 0
+        if itemcount > 1 then
+          multiplier = itemcount - 1
+        end
+
+        local image_width, image_height = image:GetSize()
+
+        image:SetPosition(pos.x, pos.y + (height / 1.1) + multiplier * (image_height / 1.6))
+      end
+    end
+  end
+end
+
+local function ClearImage(slot)
+  local image = images[slot]
+
+  if image then
+    image:Kill()
+    images[slot] = nil
+  end
+end
+
 local function GetSlot(item)
   return slots[item.name]
 end
 
-local function SetSlot(item, slot)
+local function SaveSlot(item, slot)
   print(item.name .. " -> " .. slot)
   slots[item.name] = slot
+
+  UpdateItemImage(item, slot)
 end
 
 local function ClearSlot(item)
-  slots[item.name] = nil
+  local slot = slots[item.name]
+  if slot then
+    slots[item.name] = nil
+    ClearImage(slot)
+  end
 end
 
 local function GetItemOwner(item)
@@ -152,7 +237,7 @@ local function Inventory_OnItemGet(inst, data)
   -- automatically rearranging items triggered by some other action,
   -- and if the item is a candidate for the set slot action.
   if rearranging == 0 and manually_moved_equipment == item then
-    SetSlot(item, slot)
+    SaveSlot(item, slot)
   end
 end
 
@@ -257,6 +342,28 @@ end
 
 local function InitSaveEquipmentSlots()
   AddComponentPostInit("inventory", InventoryPostInit)
+end
+
+-- Add a function to the Inventorybar which grants access
+-- to a specific Slot widget.
+function Inv:GetSlotWidget(slot)
+  return self.inv[slot]
+end
+
+-- Returns the height of the inventorybar instance
+function Inv:GetHeight()
+  if self.bg then
+    local width, height = self.bg:GetSize()
+    return height
+  end
+end
+
+-- Returns the height of the inventory slot instance
+function InvSlot:GetHeight()
+  if self.bgimage then
+    local width, height = self.bgimage:GetSize()
+    return height
+  end
 end
 
 InitSaveEquipmentSlots()

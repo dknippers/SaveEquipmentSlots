@@ -5,10 +5,10 @@ local Image = GLOBAL.require("widgets/image")
 local Inv = GLOBAL.require("widgets/inventorybar")
 local InvSlot = GLOBAL.require("widgets/invslot")
 
--- item.name => saved item slot
+-- item.prefab => saved item slot
 local slots = {}
 
--- item.name => image widget of item
+-- item.prefab => image widget of item
 local images = {}
 
 -- equipslot (EQUIPSLOTS.HANDS / EQUIPSLOTS.HEAD / EQUIPSLOTS.BODY) => item
@@ -48,39 +48,45 @@ local rearranging = 0
 local function GetItemsInSlots()
   local items = {}
 
-  for name, slot in pairs(slots) do
+  for prefab, slot in pairs(slots) do
     if not items[slot] then
       items[slot] = {}
     end
 
-    table.insert(items[slot], name)
+    table.insert(items[slot], prefab)
   end
 
   return items
 end
 
--- Returns the amount of items present in the given slot
-local function GetItemCount(slot)
+-- Returns the index of the given prefab in the slot
+local function GetItemIndex(slot, item_prefab)
   local items = GetItemsInSlots()
   if items and items[slot] then
-    return #items[slot]
-   else
-    return 0
+    for i, prefab in ipairs(items[slot]) do
+      if prefab == item_prefab then
+        return i - 1
+      end
+    end
   end
 end
 
-local function CreateItemImage(item)
+local function CreateItemImage(prefab)
+  local item = GLOBAL.SpawnPrefab(prefab)
   local image = Image(item.components.inventoryitem:GetAtlas(),item.components.inventoryitem:GetImage())
+  item:Remove()
+
   image:SetScale(0.5, 0.5, 0.5)
   image:Show()
+
   return image
 end
 
-local function UpdateItemImage(item, slot)
-  local image = images[item.name]
+local function UpdateItemImage(prefab, slot)
+  local image = images[prefab]
   if not image then
-    image = CreateItemImage(item)
-    images[item.name] = image
+    image = CreateItemImage(prefab)
+    images[prefab] = image
   end
 
   local player = GLOBAL.GetPlayer()
@@ -91,18 +97,18 @@ local function UpdateItemImage(item, slot)
     if pos then
       local height = invslot:GetHeight()
       if height then
-        local itemcount = GetItemCount(slot)
-
-        local multiplier = 0
-        if itemcount > 1 then
-          multiplier = itemcount - 1
-        end
-
+        local item_index = GetItemIndex(slot, prefab)
         local image_width, image_height = image:GetSize()
 
-        image:SetPosition(pos.x, pos.y + (height / 1.1) + multiplier * (image_height / 1.6))
+        image:SetPosition(pos.x, pos.y + (height / 1.1) + item_index * (image_height / 1.6))
       end
     end
+  end
+end
+
+local function UpdateItemImages()
+  for prefab, slot in pairs(slots) do
+    UpdateItemImage(prefab, slot)
   end
 end
 
@@ -116,21 +122,34 @@ local function ClearImage(slot)
 end
 
 local function GetSlot(item)
-  return slots[item.name]
+  return slots[item.prefab]
 end
 
 local function SaveSlot(item, slot)
-  print(item.name .. " -> " .. slot)
-  slots[item.name] = slot
+  -- print(item.name.. " -> " .. slot)
+  slots[item.prefab] = slot
 
-  UpdateItemImage(item, slot)
+  -- TODO: Optimization possibility is
+  -- to only update item images for the previous
+  -- slot of this item (if any) and the new slot
+  -- rather than all slots.
+  UpdateItemImages()
+end
+
+local function HasSlot(item)
+  if item and slots[item.prefab] then
+    return true
+  else
+    return false
+  end
 end
 
 local function ClearSlot(item)
-  local slot = slots[item.name]
+  local slot = slots[item.prefab]
   if slot then
-    slots[item.name] = nil
+    slots[item.prefab] = nil
     ClearImage(slot)
+    UpdateItemImages()
   end
 end
 
@@ -228,15 +247,18 @@ local function Inventory_OnItemGet(inst, data)
   local saved_slot = GetSlot(item)
   if saved_slot then
     local existing_item = inst.components.inventory:GetItemInSlot(saved_slot)
-    if existing_item and existing_item.name == item.name then
+    if existing_item and existing_item.prefab == item.prefab then
       return
     end
   end
 
   -- Store equipment slot, only when not in the process of
-  -- automatically rearranging items triggered by some other action,
-  -- and if the item is a candidate for the set slot action.
-  if rearranging == 0 and manually_moved_equipment == item then
+  -- automatically rearranging items triggered by some other action
+  -- and if the item was either manually moved or has never been picked up before.
+  -- The latter case makes sure the very first time an item is picked up the slot
+  -- it is put in is saved so on subsequent equip / unequip actions it will already
+  -- return to that first slot without the player having to put it there explicitly.
+  if rearranging == 0 and (manually_moved_equipment == item or not HasSlot(item)) then
     SaveSlot(item, slot)
   end
 end
@@ -313,6 +335,8 @@ local function Inventory_OnLoad(original_fn)
   return function(self, data, newents)
     if data.save_equipment_slots then
       slots = data.save_equipment_slots
+
+      tasker:DoTaskInTime(0, UpdateItemImages)
     end
 
     return original_fn(self, data, newents)
@@ -340,22 +364,10 @@ local function InventoryPostInit(self)
   end
 end
 
-local function InitSaveEquipmentSlots()
-  AddComponentPostInit("inventory", InventoryPostInit)
-end
-
 -- Add a function to the Inventorybar which grants access
 -- to a specific Slot widget.
 function Inv:GetSlotWidget(slot)
   return self.inv[slot]
-end
-
--- Returns the height of the inventorybar instance
-function Inv:GetHeight()
-  if self.bg then
-    local width, height = self.bg:GetSize()
-    return height
-  end
 end
 
 -- Returns the height of the inventory slot instance
@@ -364,6 +376,10 @@ function InvSlot:GetHeight()
     local width, height = self.bgimage:GetSize()
     return height
   end
+end
+
+local function InitSaveEquipmentSlots()
+  AddComponentPostInit("inventory", InventoryPostInit)
 end
 
 InitSaveEquipmentSlots()

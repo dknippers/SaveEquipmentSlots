@@ -1,5 +1,5 @@
 name = "Save Equipment Slots"
-description = "Saves the inventory slots of equipment and makes sure equipment always returns to their saved slot. If a saved slot is occupied items will be rearranged automatically to make space."
+description = "Saves the inventory slots of equipment items and makes sure they always return to their saved slot. If a saved slot is occupied items will be rearranged automatically to make space."
 author = "dani"
 version = "1.0.0"
 forumthread = ""

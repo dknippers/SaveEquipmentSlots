@@ -1,4 +1,6 @@
 # Save Equipment Slots
+![modicon](save-equipment-slots/images/modicon.png?raw=true "modicon")
+
 Mod for Don't Starve (Vanilla, Reign of Giants, and Shipwrecked).
 
 ## Description

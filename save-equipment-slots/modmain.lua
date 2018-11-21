@@ -112,12 +112,12 @@ local function UpdateItemImages()
   end
 end
 
-local function ClearImage(slot)
-  local image = images[slot]
+local function ClearImage(prefab)
+  local image = images[prefab]
 
   if image then
     image:Kill()
-    images[slot] = nil
+    images[prefab] = nil
   end
 end
 
@@ -148,7 +148,7 @@ local function ClearSlot(item)
   local slot = slots[item.prefab]
   if slot then
     slots[item.prefab] = nil
-    ClearImage(slot)
+    ClearImage(item.prefab)
     UpdateItemImages()
   end
 end

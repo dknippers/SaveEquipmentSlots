@@ -5,7 +5,10 @@ local Image = GLOBAL.require("widgets/image")
 local Inv = GLOBAL.require("widgets/inventorybar")
 local InvSlot = GLOBAL.require("widgets/invslot")
 
--- item.prefab => saved item slot
+-- saved slot -> [item.prefab]
+local items = {}
+
+-- item.prefab => saved slot
 local slots = {}
 
 -- item.prefab => image widget of item
@@ -43,26 +46,23 @@ local runfns_scheduled = false
 -- item at a time through recursive calls to
 local rearranging = 0
 
--- Returns the items per inventory slot,
--- essentially the inverse of the `slots` table
-local function GetItemsInSlots()
-  local items = {}
+-- Generates a table of item.prefab -> slot,
+-- based on the current contents of the `items` variable
+local function GetItemSlots()
+  local slots = {}
 
-  for prefab, slot in pairs(slots) do
-    if not items[slot] then
-      items[slot] = {}
+  for slot, prefabs in pairs(items) do
+    for i, prefab in ipairs(prefabs) do
+      slots[prefab] = slot
     end
-
-    table.insert(items[slot], prefab)
   end
 
-  return items
+  return slots
 end
 
 -- Returns the index of the given prefab in the slot
 local function GetItemIndex(slot, item_prefab)
-  local items = GetItemsInSlots()
-  if items and items[slot] then
+  if items[slot] then
     for i, prefab in ipairs(items[slot]) do
       if prefab == item_prefab then
         return i - 1
@@ -82,24 +82,29 @@ local function CreateItemImage(prefab)
   return image
 end
 
-local function UpdateItemImage(prefab, slot)
-  local image = images[prefab]
-  if not image then
-    image = CreateItemImage(prefab)
-    images[prefab] = image
-  end
 
+local function UpdateItemsInSlot(slot)
   local player = GLOBAL.GetPlayer()
   local inventorybar = player.HUD.controls.inv
   local invslot = inventorybar:GetSlotWidget(slot)
-  if invslot then
+
+  if not invslot then
+    return
+  end
+
+  for idx, prefab in ipairs(items[slot]) do
+    local image = images[prefab]
+    if not image then
+      image = CreateItemImage(prefab)
+      images[prefab] = image
+    end
+
     local pos = invslot:GetWorldPosition()
     if pos then
       local height = invslot:GetHeight()
       if height then
-        local item_index = GetItemIndex(slot, prefab)
+        local item_index = idx - 1
         local image_width, image_height = image:GetSize()
-
         image:SetPosition(pos.x, pos.y + (height / 1.1) + item_index * (image_height / 1.6))
       end
     end
@@ -107,8 +112,8 @@ local function UpdateItemImage(prefab, slot)
 end
 
 local function UpdateItemImages()
-  for prefab, slot in pairs(slots) do
-    UpdateItemImage(prefab, slot)
+  for slot, prefab in pairs(items) do
+    UpdateItemsInSlot(slot)
   end
 end
 
@@ -121,13 +126,36 @@ local function ClearImage(prefab)
   end
 end
 
+
+local function RemoveItemFromSlot(item, slot)
+  for idx, prefab in ipairs(items[slot]) do
+    if prefab == item.prefab then
+      table.remove(items[slot], idx)
+      return
+    end
+  end
+end
+
 local function GetSlot(item)
-  return slots[item.prefab]
+  if item then
+    return slots[item.prefab]
+  end
 end
 
 local function SaveSlot(item, slot)
-  -- print(item.name.. " -> " .. slot)
-  slots[item.prefab] = slot
+  local prev_slot = GetSlot(item)
+  if prev_slot then
+    RemoveItemFromSlot(item, prev_slot)
+  end
+
+  if not items[slot] then
+    items[slot] = {}
+  end
+
+  table.insert(items[slot], item.prefab)
+
+  -- Update slot table as `items` has been changed
+  slots = GetItemSlots()
 
   -- TODO: Optimization possibility is
   -- to only update item images for the previous
@@ -137,17 +165,14 @@ local function SaveSlot(item, slot)
 end
 
 local function HasSlot(item)
-  if item and slots[item.prefab] then
-    return true
-  else
-    return false
-  end
+  return not GetSlot(item) == nil
 end
 
 local function ClearSlot(item)
-  local slot = slots[item.prefab]
+  local slot = GetSlot(item)
   if slot then
     slots[item.prefab] = nil
+    RemoveItemFromSlot(item, slot)
     ClearImage(item.prefab)
     UpdateItemImages()
   end
@@ -158,6 +183,7 @@ local function GetItemOwner(item)
     return item.components.inventoryitem:GetGrandOwner()
   end
 end
+
 
 -- Specifies if `item` is equipment
 local function IsEquipment(item)
@@ -334,7 +360,8 @@ end
 local function Inventory_OnLoad(original_fn)
   return function(self, data, newents)
     if data.save_equipment_slots then
-      slots = data.save_equipment_slots
+      items = data.save_equipment_slots
+      slots = GetItemSlots()
 
       tasker:DoTaskInTime(0, UpdateItemImages)
     end
@@ -346,7 +373,7 @@ end
 local function Inventory_OnSave(original_fn)
   return function(self)
     local data = original_fn(self)
-    data.save_equipment_slots = slots
+    data.save_equipment_slots = items
     return data
   end
 end

@@ -1,10 +1,21 @@
+-- Development only
 -- GLOBAL.CHEATS_ENABLED = true
 -- GLOBAL.require('debugkeys')
 
-local Image = GLOBAL.require("widgets/image")
-local ImageButton = GLOBAL.require("widgets/imagebutton")
-local Inv = GLOBAL.require("widgets/inventorybar")
-local InvSlot = GLOBAL.require("widgets/invslot")
+-- Lua built-ins that are only accessible through GLOBAL
+local require = GLOBAL.require
+local setmetatable = GLOBAL.setmetatable
+local rawset = GLOBAL.rawset
+
+-- DS globals
+local CreateEntity = GLOBAL.CreateEntity
+local SpawnPrefab = GLOBAL.SpawnPrefab
+local GetPlayer = GLOBAL.GetPlayer
+
+local Image = require("widgets/image")
+local ImageButton = require("widgets/imagebutton")
+local Inv = require("widgets/inventorybar")
+local InvSlot = require("widgets/invslot")
 
 -- saved slot -> [item.prefab]
 local items = {}
@@ -30,7 +41,7 @@ local last_equipped_item = {}
 local manually_moved_equipment = nil
 
 -- entity to run tasks with, necessary to gain access to DoTaskInTime()
-local tasker = GLOBAL.CreateEntity()
+local tasker = CreateEntity()
 
 -- functions to be executed later, in insertion order (DoTaskInTime() does not guarantee the order)
 local fns = {}
@@ -60,7 +71,7 @@ function fn.GetItemSlots()
   local slots = {}
 
   for slot, prefabs in pairs(items) do
-    for i, prefab in ipairs(prefabs) do
+    for _, prefab in ipairs(prefabs) do
       slots[prefab] = slot
     end
   end
@@ -70,14 +81,14 @@ end
 
 -- Returns the Inventory bar widget
 function fn.GetInventorybar()
-  local player = GLOBAL.GetPlayer()
+  local player = GetPlayer()
   if player and player.HUD and player.HUD.controls then
     return player.HUD.controls.inv
   end
 end
 
 function fn.CreateItemImage(prefab)
-  local item = GLOBAL.SpawnPrefab(prefab)
+  local item = SpawnPrefab(prefab)
   local image = ImageButton(item.components.inventoryitem:GetAtlas(), item.components.inventoryitem:GetImage())
 
   local inventorybar = fn.GetInventorybar()
@@ -415,7 +426,7 @@ function fn.Inventory_OnSave(original_fn)
 end
 
 function fn.InventoryPostInit(self)
-  local player = GLOBAL.GetPlayer()
+  local player = GetPlayer()
 
   if player.components.inventory == self then
     self.inst:ListenForEvent("equip", fn.Inventory_OnEquip)

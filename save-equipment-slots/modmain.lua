@@ -2,6 +2,7 @@
 -- GLOBAL.require('debugkeys')
 
 local Image = GLOBAL.require("widgets/image")
+local ImageButton = GLOBAL.require("widgets/imagebutton")
 local Inv = GLOBAL.require("widgets/inventorybar")
 local InvSlot = GLOBAL.require("widgets/invslot")
 
@@ -11,8 +12,8 @@ local items = {}
 -- item.prefab => saved slot
 local slots = {}
 
--- item.prefab => image widget of item
-local images = {}
+-- item.prefab => image button widget of item
+local image_buttons = {}
 
 -- equipslot (EQUIPSLOTS.HANDS / EQUIPSLOTS.HEAD / EQUIPSLOTS.BODY) => item
 -- we use this information to give priority to a piece of equipment that is moved back
@@ -46,9 +47,16 @@ local runfns_scheduled = false
 -- item at a time through recursive calls to
 local rearranging = 0
 
+-- All functions will be stored in this table,
+-- in this way we can bypass the Lua limitation that
+-- a function X can only call other local functions that
+-- are declared before X is declared.
+-- When storing them all in a table, this limitation is removed.
+local fn = {}
+
 -- Generates a table of item.prefab -> slot,
 -- based on the current contents of the `items` variable
-local function GetItemSlots()
+function fn.GetItemSlots()
   local slots = {}
 
   for slot, prefabs in pairs(items) do
@@ -60,138 +68,159 @@ local function GetItemSlots()
   return slots
 end
 
--- Returns the index of the given prefab in the slot
-local function GetItemIndex(slot, item_prefab)
-  if items[slot] then
-    for i, prefab in ipairs(items[slot]) do
-      if prefab == item_prefab then
-        return i - 1
-      end
-    end
+-- Returns the Inventory bar widget
+function fn.GetInventorybar()
+  local player = GLOBAL.GetPlayer()
+  if player and player.HUD and player.HUD.controls then
+    return player.HUD.controls.inv
   end
 end
 
-local function CreateItemImage(prefab)
+function fn.CreateItemImage(prefab)
   local item = GLOBAL.SpawnPrefab(prefab)
-  local image = Image(item.components.inventoryitem:GetAtlas(),item.components.inventoryitem:GetImage())
+  local image = ImageButton(item.components.inventoryitem:GetAtlas(), item.components.inventoryitem:GetImage())
+
+  local inventorybar = fn.GetInventorybar()
+  inventorybar:AddChild(image)
+
   item:Remove()
 
-  image:SetScale(0.5, 0.5, 0.5)
-  image:Show()
+  image:SetScale(0.9, 0.9, 0.9)
 
   return image
 end
 
-
-local function UpdateItemsInSlot(slot)
-  local player = GLOBAL.GetPlayer()
-  local inventorybar = player.HUD.controls.inv
+function fn.UpdateItemsInSlot(slot)
+  local inventorybar = fn.GetInventorybar()
   local invslot = inventorybar:GetSlotWidget(slot)
 
-  if not invslot then
+  if not invslot or not items[slot] then
     return
   end
 
   for idx, prefab in ipairs(items[slot]) do
-    local image = images[prefab]
-    if not image then
-      image = CreateItemImage(prefab)
-      images[prefab] = image
+    local image_button = image_buttons[prefab]
+    if not image_button then
+      image_button = fn.CreateItemImage(prefab)
+      image_buttons[prefab] = image_button
     end
 
-    local pos = invslot:GetWorldPosition()
+    image_button:SetOnClick(function()
+      fn.ClearItem(prefab)
+    end)
+
+    local pos = invslot:GetLocalPosition()
     if pos then
       local height = invslot:GetHeight()
       if height then
         local item_index = idx - 1
-        local image_width, image_height = image:GetSize()
-        image:SetPosition(pos.x, pos.y + (height / 1.1) + item_index * (image_height / 1.6))
+        local _, image_button_height = image_button:GetSize()
+        local invbar_padding = 28
+        image_button:SetPosition(pos.x, pos.y + invbar_padding + (height * 2) + item_index * image_button_height)
+        if image_button.o_pos then
+          -- The game itself stores some "original position"
+          -- when a button is focused and updates the button's position
+          -- to that position when the button loses focus.
+          -- However, this does not work properly in some cases when we
+          -- have already shifted the button position, causing the game
+          -- to move the button back to some previous position.
+          -- Thus, we also update this (internal) o_pos value when
+          -- it has a value.
+          image_button.o_pos = image_button:GetLocalPosition()
+        end
       end
     end
   end
 end
 
-local function UpdateItemImages()
-  for slot, prefab in pairs(items) do
-    UpdateItemsInSlot(slot)
+function fn.UpdateImageButtons()
+  for slot, _ in pairs(items) do
+    fn.UpdateItemsInSlot(slot)
   end
 end
 
-local function ClearImage(prefab)
-  local image = images[prefab]
+function fn.ClearImage(prefab)
+  local image = image_buttons[prefab]
 
   if image then
     image:Kill()
-    images[prefab] = nil
+    image_buttons[prefab] = nil
   end
 end
 
+function fn.RemoveItemFromSlot(prefab, slot)
+  local items_in_slot = items[slot]
 
-local function RemoveItemFromSlot(item, slot)
-  for idx, prefab in ipairs(items[slot]) do
-    if prefab == item.prefab then
-      table.remove(items[slot], idx)
+  if not items_in_slot then
+    return
+  end
+
+  for i = #items_in_slot, 1, -1 do
+    if prefab == items_in_slot[i] then
+      table.remove(items_in_slot, i)
       return
     end
   end
 end
 
-local function GetSlot(item)
-  if item then
-    return slots[item.prefab]
+function fn.GetSlot(prefab)
+  if prefab then
+    return slots[prefab]
   end
 end
 
-local function SaveSlot(item, slot)
-  local prev_slot = GetSlot(item)
+function fn.SaveSlot(prefab, slot)
+  local prev_slot = fn.GetSlot(prefab)
   if prev_slot then
-    RemoveItemFromSlot(item, prev_slot)
+    fn.RemoveItemFromSlot(prefab, prev_slot)
   end
 
   if not items[slot] then
     items[slot] = {}
   end
 
-  table.insert(items[slot], item.prefab)
+  table.insert(items[slot], prefab)
 
   -- Update slot table as `items` has been changed
-  slots = GetItemSlots()
+  slots = fn.GetItemSlots()
 
   -- TODO: Optimization possibility is
   -- to only update item images for the previous
   -- slot of this item (if any) and the new slot
   -- rather than all slots.
-  UpdateItemImages()
+  fn.UpdateImageButtons()
 end
 
-local function HasSlot(item)
-  return not GetSlot(item) == nil
+function fn.HasSlot(prefab)
+  return not fn.GetSlot(prefab) == nil
 end
 
-local function ClearSlot(item)
-  local slot = GetSlot(item)
+function fn.ClearItem(prefab)
+  local slot = fn.GetSlot(prefab)
   if slot then
-    slots[item.prefab] = nil
-    RemoveItemFromSlot(item, slot)
-    ClearImage(item.prefab)
-    UpdateItemImages()
+    fn.RemoveItemFromSlot(prefab, slot)
+    fn.ClearImage(prefab)
+
+    -- Update slot table as `items` has been changed
+    slots = fn.GetItemSlots()
+
+    fn.UpdateImageButtons()
   end
 end
 
-local function GetItemOwner(item)
+function fn.GetItemOwner(item)
   if item and item.components and item.components.inventoryitem then
     return item.components.inventoryitem:GetGrandOwner()
   end
 end
 
-
 -- Specifies if `item` is equipment
-local function IsEquipment(item)
+function fn.IsEquipment(item)
   return item and item.components and item.components.equippable
 end
 
-local function GetEquipSlot(item)
-  if not IsEquipment(item) then
+function fn.GetEquipSlot(item)
+  if not fn.IsEquipment(item) then
     return nil
   end
 
@@ -199,32 +228,39 @@ local function GetEquipSlot(item)
 end
 
 -- Runs all functions in the fns table and removes them after
-local function RunFns()
-  for i, fn in ipairs(fns) do
-    fn()
-    fns[i] = nil
+function fn.RunFns()
+  local len = #fns
+
+  -- Run
+  for _, func in ipairs(fns) do
+    func()
+  end
+
+  -- Clear
+  for i = len, 1, -1 do
+    table.remove(fns, i)
   end
 end
 
 -- Queues the specified function to be run after the currently
 -- active coroutine has yielded
-local function QueueFn(fn)
-  table.insert(fns, fn)
+function fn.QueueFunc(func)
+  table.insert(fns, func)
 
   if not runfns_scheduled then
     runfns_scheduled = true
     tasker:DoTaskInTime(0, function()
-      RunFns()
+      fn.RunFns()
       runfns_scheduled = false
     end)
   end
 end
 
-local function Inventory_OnEquip(inst, data)
+function fn.Inventory_OnEquip(inst, data)
   local item = data.item
   local eslot = data.eslot
 
-  if not IsEquipment(item) then
+  if not fn.IsEquipment(item) then
     return
   end
 
@@ -254,11 +290,11 @@ local function Inventory_OnEquip(inst, data)
   item.prevslot = nil
 end
 
-local function Inventory_OnItemGet(inst, data)
+function fn.Inventory_OnItemGet(inst, data)
   local item = data.item
   local slot = data.slot
 
-  if not IsEquipment(item) or not slot then
+  if not fn.IsEquipment(item) or not slot then
     return
   end
 
@@ -270,7 +306,7 @@ local function Inventory_OnItemGet(inst, data)
   -- the new copy obviously will be moved to some other slot since the saved slot
   -- is taken, but that would then update the preferred slot to the new slot which
   -- is not actually what we want.
-  local saved_slot = GetSlot(item)
+  local saved_slot = fn.GetSlot(item.prefab)
   if saved_slot then
     local existing_item = inst.components.inventory:GetItemInSlot(saved_slot)
     if existing_item and existing_item.prefab == item.prefab then
@@ -284,21 +320,21 @@ local function Inventory_OnItemGet(inst, data)
   -- The latter case makes sure the very first time an item is picked up the slot
   -- it is put in is saved so on subsequent equip / unequip actions it will already
   -- return to that first slot without the player having to put it there explicitly.
-  if rearranging == 0 and (manually_moved_equipment == item or not HasSlot(item)) then
-    SaveSlot(item, slot)
+  if rearranging == 0 and (manually_moved_equipment == item or not fn.HasSlot(item.prefab)) then
+    fn.SaveSlot(item.prefab, slot)
   end
 end
 
-local function Inventory_OnNewActiveItem(inst, data)
+function fn.Inventory_OnNewActiveItem(inst, data)
   local item = data.item
 
   -- Logic itself is queued until all actions are resolved,
   -- this is necessary as the active item is first removed before
   -- it's being put in the inventory, and we do not want to clear the manually_moved_equipment
-  -- before that has happened. QueueFn will guarantee we first wait for the current
+  -- before that has happened. QueueFunc will guarantee we first wait for the current
   -- chain of events to finish.
-  QueueFn(function()
-    if IsEquipment(item) then
+  fn.QueueFunc(function()
+    if fn.IsEquipment(item) then
       manually_moved_equipment = item
     else
       if manually_moved_equipment then
@@ -308,11 +344,11 @@ local function Inventory_OnNewActiveItem(inst, data)
   end)
 end
 
-local function Inventory_GetNextAvailableSlot(original_fn)
+function fn.Inventory_GetNextAvailableSlot(original_fn)
   return function(self, item)
-    local saved_slot = GetSlot(item)
+    local saved_slot = fn.GetSlot(item.prefab)
 
-    if not saved_slot or not IsEquipment(item) then
+    if not saved_slot or not fn.IsEquipment(item) then
       return original_fn(self, item)
     end
 
@@ -320,14 +356,14 @@ local function Inventory_GetNextAvailableSlot(original_fn)
     if blocking_item then
       -- If the item was equipped and is now in the process of becoming
       -- unequipped we always place it back into its saved slot.
-      local equipslot = GetEquipSlot(item)
+      local equipslot = fn.GetEquipSlot(item)
       local was_equipped = equipslot and last_equipped_item[equipslot] == item
 
       -- blocking_item is moved if any of these conditions is true
       -- 1) the new item was just unequipped
       -- 2) blocking_item is not equipment
       -- 3) blocking_item is not in its saved slot
-      local move_blocking_item = was_equipped or not IsEquipment(blocking_item) or GetSlot(blocking_item) ~= saved_slot
+      local move_blocking_item = was_equipped or not fn.IsEquipment(blocking_item) or fn.GetSlot(blocking_item.prefab) ~= saved_slot
 
       -- If we are not moving the blocking_item at all we will let the game decide where to put the
       -- new equipment.
@@ -357,20 +393,20 @@ local function Inventory_GetNextAvailableSlot(original_fn)
   end
 end
 
-local function Inventory_OnLoad(original_fn)
+function fn.Inventory_OnLoad(original_fn)
   return function(self, data, newents)
     if data.save_equipment_slots then
       items = data.save_equipment_slots
-      slots = GetItemSlots()
+      slots = fn.GetItemSlots()
 
-      tasker:DoTaskInTime(0, UpdateItemImages)
+      tasker:DoTaskInTime(0, fn.UpdateImageButtons)
     end
 
     return original_fn(self, data, newents)
   end
 end
 
-local function Inventory_OnSave(original_fn)
+function fn.Inventory_OnSave(original_fn)
   return function(self)
     local data = original_fn(self)
     data.save_equipment_slots = items
@@ -378,16 +414,16 @@ local function Inventory_OnSave(original_fn)
   end
 end
 
-local function InventoryPostInit(self)
+function fn.InventoryPostInit(self)
   local player = GLOBAL.GetPlayer()
 
   if player.components.inventory == self then
-    self.inst:ListenForEvent("equip", Inventory_OnEquip)
-    self.inst:ListenForEvent("itemget", Inventory_OnItemGet)
-    self.inst:ListenForEvent("newactiveitem", Inventory_OnNewActiveItem)
-    self.GetNextAvailableSlot = Inventory_GetNextAvailableSlot(self.GetNextAvailableSlot)
-    self.OnLoad = Inventory_OnLoad(self.OnLoad)
-    self.OnSave = Inventory_OnSave(self.OnSave)
+    self.inst:ListenForEvent("equip", fn.Inventory_OnEquip)
+    self.inst:ListenForEvent("itemget", fn.Inventory_OnItemGet)
+    self.inst:ListenForEvent("newactiveitem", fn.Inventory_OnNewActiveItem)
+    self.GetNextAvailableSlot = fn.Inventory_GetNextAvailableSlot(self.GetNextAvailableSlot)
+    self.OnLoad = fn.Inventory_OnLoad(self.OnLoad)
+    self.OnSave = fn.Inventory_OnSave(self.OnSave)
   end
 end
 
@@ -405,8 +441,8 @@ function InvSlot:GetHeight()
   end
 end
 
-local function InitSaveEquipmentSlots()
-  AddComponentPostInit("inventory", InventoryPostInit)
+function fn.InitSaveEquipmentSlots()
+  AddComponentPostInit("inventory", fn.InventoryPostInit)
 end
 
-InitSaveEquipmentSlots()
+fn.InitSaveEquipmentSlots()

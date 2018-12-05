@@ -87,32 +87,39 @@ function fn.GetInventorybar()
   end
 end
 
-function fn.CreateItemImage(prefab)
+function fn.CreateImageButton(prefab)
   local item = SpawnPrefab(prefab)
   local image = ImageButton(item.components.inventoryitem:GetAtlas(), item.components.inventoryitem:GetImage())
+
+  -- Item was only used for its GetAtlas() and GetImage() functions, can be removed immediately
+  item:Remove()
+
+  image:SetScale(0.9)
 
   local inventorybar = fn.GetInventorybar()
   inventorybar:AddChild(image)
 
-  item:Remove()
-
-  image:SetScale(0.9, 0.9, 0.9)
-
   return image
 end
 
-function fn.UpdateItemsInSlot(slot)
+function fn.UpdateImageButtons()
+  for slot, _ in pairs(items) do
+    fn.UpdateImageButtonsForSlot(slot)
+  end
+end
+
+function fn.UpdateImageButtonsForSlot(slot)
   local inventorybar = fn.GetInventorybar()
-  local invslot = inventorybar:GetSlotWidget(slot)
+  local invslot = inventorybar.inv[slot]
 
   if not invslot or not items[slot] then
     return
   end
 
-  for idx, prefab in ipairs(items[slot]) do
+  for item_index, prefab in ipairs(items[slot]) do
     local image_button = image_buttons[prefab]
     if not image_button then
-      image_button = fn.CreateItemImage(prefab)
+      image_button = fn.CreateImageButton(prefab)
       image_buttons[prefab] = image_button
     end
 
@@ -120,33 +127,34 @@ function fn.UpdateItemsInSlot(slot)
       fn.ClearItem(prefab)
     end)
 
-    local pos = invslot:GetLocalPosition()
-    if pos then
-      local height = invslot:GetHeight()
-      if height then
-        local item_index = idx - 1
-        local _, image_button_height = image_button:GetSize()
-        local invbar_padding = 28
-        image_button:SetPosition(pos.x, pos.y + invbar_padding + (height * 2) + item_index * image_button_height)
-        if image_button.o_pos then
-          -- The game itself stores some "original position"
-          -- when a button is focused and updates the button's position
-          -- to that position when the button loses focus.
-          -- However, this does not work properly in some cases when we
-          -- have already shifted the button position, causing the game
-          -- to move the button back to some previous position.
-          -- Thus, we also update this (internal) o_pos value when
-          -- it has a value.
-          image_button.o_pos = image_button:GetLocalPosition()
-        end
-      end
-    end
+    fn.UpdateImageButtonPosition(image_button, item_index, inventorybar, invslot)
   end
 end
 
-function fn.UpdateImageButtons()
-  for slot, _ in pairs(items) do
-    fn.UpdateItemsInSlot(slot)
+function fn.UpdateImageButtonPosition(image_button, item_index, inventorybar, invslot)
+  local invslot_pos = invslot:GetLocalPosition()
+
+  if invslot_pos and invslot.bgimage then
+    local _, invslot_height = invslot.bgimage:GetSize()
+
+    if invslot_height then
+      local _, image_button_height = image_button:GetSize()
+
+      -- Spacing between top of inventory bar and start of image button
+      local spacing = 28
+      image_button:SetPosition(invslot_pos.x, invslot_pos.y + spacing + (invslot_height * 2) + (item_index - 1) * image_button_height)
+      if image_button.o_pos then
+        -- The game itself stores some "original position"
+        -- when a button is focused and updates the button's position
+        -- to that position when the button loses focus.
+        -- However, this does not work properly in some cases when we
+        -- have already shifted the button position, causing the game
+        -- to move the button back to some previous position.
+        -- Thus, we also update this (internal) o_pos value when
+        -- it has a value.
+        image_button.o_pos = image_button:GetLocalPosition()
+      end
+    end
   end
 end
 
@@ -184,6 +192,7 @@ function fn.SaveSlot(prefab, slot)
   local prev_slot = fn.GetSlot(prefab)
   if prev_slot then
     fn.RemoveItemFromSlot(prefab, prev_slot)
+    fn.UpdateImageButtonsForSlot(prev_slot)
   end
 
   if not items[slot] then
@@ -195,11 +204,7 @@ function fn.SaveSlot(prefab, slot)
   -- Update slot table as `items` has been changed
   slots = fn.GetItemSlots()
 
-  -- TODO: Optimization possibility is
-  -- to only update item images for the previous
-  -- slot of this item (if any) and the new slot
-  -- rather than all slots.
-  fn.UpdateImageButtons()
+  fn.UpdateImageButtonsForSlot(slot)
 end
 
 function fn.HasSlot(prefab)
@@ -435,20 +440,6 @@ function fn.InventoryPostInit(self)
     self.GetNextAvailableSlot = fn.Inventory_GetNextAvailableSlot(self.GetNextAvailableSlot)
     self.OnLoad = fn.Inventory_OnLoad(self.OnLoad)
     self.OnSave = fn.Inventory_OnSave(self.OnSave)
-  end
-end
-
--- Add a function to the Inventorybar which grants access
--- to a specific Slot widget.
-function Inv:GetSlotWidget(slot)
-  return self.inv[slot]
-end
-
--- Returns the height of the inventory slot instance
-function InvSlot:GetHeight()
-  if self.bgimage then
-    local width, height = self.bgimage:GetSize()
-    return height
   end
 end
 

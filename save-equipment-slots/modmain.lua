@@ -124,7 +124,7 @@ function fn.UpdateImageButtonsForSlot(slot)
     end
 
     image_button:SetOnClick(function()
-      fn.ClearItem(prefab)
+      fn.ClearSlot(prefab, slot)
     end)
 
     fn.UpdateImageButtonPosition(image_button, item_index, inventorybar, invslot)
@@ -167,17 +167,13 @@ function fn.ClearImage(prefab)
   end
 end
 
-function fn.RemoveItemFromSlot(prefab, slot)
-  local items_in_slot = items[slot]
-
-  if not items_in_slot then
-    return
-  end
-
-  for i = #items_in_slot, 1, -1 do
-    if prefab == items_in_slot[i] then
-      table.remove(items_in_slot, i)
-      return
+function fn.RemoveFromTable(tbl, fn, one)
+  if type(tbl) == "table" then
+    for i = #tbl, 1, -1 do
+      if fn(tbl[i]) then
+        table.remove(tbl, i)
+        if one then return end
+      end
     end
   end
 end
@@ -188,10 +184,16 @@ function fn.GetSlot(prefab)
   end
 end
 
+function fn.Equals(obj)
+  return function(other)
+    return other == obj
+  end
+end
+
 function fn.SaveSlot(prefab, slot)
   local prev_slot = fn.GetSlot(prefab)
   if prev_slot then
-    fn.RemoveItemFromSlot(prefab, prev_slot)
+    fn.RemoveFromTable(items[prev_slot], fn.Equals(prefab), true)
     fn.UpdateImageButtonsForSlot(prev_slot)
   end
 
@@ -201,6 +203,17 @@ function fn.SaveSlot(prefab, slot)
 
   table.insert(items[slot], prefab)
 
+    -- Update slot table as `items` has been changed
+  slots = fn.GetItemSlots()
+
+  fn.UpdateImageButtonsForSlot(slot)
+end
+
+function fn.ClearSlot(prefab, slot)
+  -- Remove from `items`
+  fn.RemoveFromTable(items[slot], fn.Equals(prefab), true)
+  fn.ClearImage(prefab)
+
   -- Update slot table as `items` has been changed
   slots = fn.GetItemSlots()
 
@@ -209,19 +222,6 @@ end
 
 function fn.HasSlot(prefab)
   return not fn.GetSlot(prefab) == nil
-end
-
-function fn.ClearItem(prefab)
-  local slot = fn.GetSlot(prefab)
-  if slot then
-    fn.RemoveItemFromSlot(prefab, slot)
-    fn.ClearImage(prefab)
-
-    -- Update slot table as `items` has been changed
-    slots = fn.GetItemSlots()
-
-    fn.UpdateImageButtons()
-  end
 end
 
 function fn.GetItemOwner(item)
@@ -323,6 +323,7 @@ function fn.Inventory_OnItemGet(inst, data)
   -- is taken, but that would then update the preferred slot to the new slot which
   -- is not actually what we want.
   local saved_slot = fn.GetSlot(item.prefab)
+
   if saved_slot then
     local existing_item = inst.components.inventory:GetItemInSlot(saved_slot)
     if existing_item and existing_item.prefab == item.prefab then

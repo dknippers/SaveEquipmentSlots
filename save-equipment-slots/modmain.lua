@@ -4,8 +4,6 @@
 
 -- Lua built-ins that are only accessible through GLOBAL
 local require = GLOBAL.require
-local setmetatable = GLOBAL.setmetatable
-local rawset = GLOBAL.rawset
 
 -- DS globals
 local CreateEntity = GLOBAL.CreateEntity
@@ -25,14 +23,6 @@ local slots = {}
 
 -- item.prefab => image button widget of item
 local image_buttons = {}
-
--- equipslot (EQUIPSLOTS.HANDS / EQUIPSLOTS.HEAD / EQUIPSLOTS.BODY) => item
--- we use this information to give priority to a piece of equipment that is moved back
--- after being equipped. it will then always go back to its slot, even if another copy
--- of the same item is there currently. this is to assure you will always exhaust
--- one of your copies of one type of equipment first, rather than switching to a 100% one after
--- swapping equipment a few times.
-local last_equipped_item = {}
 
 -- the equipment that was just manually moved by the player
 -- by dragging it into a new inventory slot. this is used to determine
@@ -178,6 +168,20 @@ function fn.RemoveFromTable(tbl, fn, one)
   end
 end
 
+function fn.WhenFiniteUses(item, when, whenNot)
+  if item and item.components and item.components.finiteuses then
+    return when(item.components.finiteuses)
+  else
+    return whenNot
+  end
+end
+
+function fn.GetRemainingUses(item)
+  return fn.WhenFiniteUses(item, function(fu)
+    return fu.current
+  end)
+end
+
 function fn.GetSlot(prefab)
   if prefab then
     return slots[prefab]
@@ -280,10 +284,6 @@ function fn.Inventory_OnEquip(inst, data)
     return
   end
 
-  if eslot then
-    last_equipped_item[eslot] = item
-  end
-
   -- There is a strange bug in the base
   -- game where equipment that has ever been in
   -- your backpack will go straight back to the backback
@@ -371,16 +371,14 @@ function fn.Inventory_GetNextAvailableSlot(original_fn)
 
     local blocking_item = self:GetItemInSlot(saved_slot)
     if blocking_item then
-      -- If the item was equipped and is now in the process of becoming
-      -- unequipped we always place it back into its saved slot.
-      local equipslot = fn.GetEquipSlot(item)
-      local was_equipped = equipslot and last_equipped_item[equipslot] == item
-
       -- blocking_item is moved if any of these conditions is true
-      -- 1) the new item was just unequipped
-      -- 2) blocking_item is not equipment
-      -- 3) blocking_item is not in its saved slot
-      local move_blocking_item = was_equipped or not fn.IsEquipment(blocking_item) or fn.GetSlot(blocking_item.prefab) ~= saved_slot
+      -- 1) blocking_item is not equipment
+      -- 2) blocking_item is not in its saved slot
+      -- 3) blocking_item is the same item but has more uses remaining than the incoming item
+      local move_blocking_item =
+        not fn.IsEquipment(blocking_item) or
+        fn.GetSlot(blocking_item.prefab) ~= saved_slot or
+        (blocking_item.prefab == item.prefab and fn.GetRemainingUses(blocking_item) > fn.GetRemainingUses(item))
 
       -- If we are not moving the blocking_item at all we will let the game decide where to put the
       -- new equipment.

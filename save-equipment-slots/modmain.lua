@@ -359,12 +359,14 @@ function fn.Inventory_GetNextAvailableSlot(original_fn)
 
       -- Alternatively, the blocking_item will be equipped instead when all of the following is true
       -- 1) we are not currently equipping some other item
-      -- 2) blocking_item cannot be moved
+      -- 2) blocking_item is not being moved
+      -- 3) blocking_item is not the same type prefab as item
       -- 3) blocking_item and item share the same equipslot
       -- 4) blocking_item can be equipped immediately
       local equip_blocking_item =
         not is_equipping and
         not move_blocking_item and
+        blocking_item.prefab ~= item.prefab and
         fn.ShareEquipSlot(item, blocking_item) and
         fn.CanEquip(blocking_item, self)
 

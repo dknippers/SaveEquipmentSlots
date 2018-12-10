@@ -79,26 +79,29 @@ end
 
 function fn.CreateImageButton(prefab)
   local item = SpawnPrefab(prefab)
-  local image = ImageButton(item.components.inventoryitem:GetAtlas(), item.components.inventoryitem:GetImage())
+  local image_button = ImageButton(item.components.inventoryitem:GetAtlas(), item.components.inventoryitem:GetImage())
 
-  -- Item was only used for its GetAtlas() and GetImage() functions, can be removed immediately
+  -- Item was only used for its GetAtlas() and GetImage() functions and can be removed immediately
   item:Remove()
 
-  image:SetScale(0.9)
+  image_button:SetScale(0.9)
 
   local inventorybar = fn.GetInventorybar()
-  inventorybar:AddChild(image)
 
-  return image
+  if inventorybar then
+    inventorybar:AddChild(image_button)
+  end
+
+  return image_button
 end
 
-function fn.UpdateImageButtons()
+function fn.UpdatePreviews()
   for slot, _ in pairs(items) do
-    fn.UpdateImageButtonsForSlot(slot)
+    fn.UpdatePreviewsForSlot(slot)
   end
 end
 
-function fn.UpdateImageButtonsForSlot(slot)
+function fn.UpdatePreviewsForSlot(slot)
   local inventorybar = fn.GetInventorybar()
   local invslot = inventorybar.inv[slot]
 
@@ -148,7 +151,7 @@ function fn.UpdateImageButtonPosition(image_button, item_index, inventorybar, in
   end
 end
 
-function fn.ClearImage(prefab)
+function fn.ClearPreview(prefab)
   local image = image_buttons[prefab]
 
   if image then
@@ -198,7 +201,7 @@ function fn.SaveSlot(prefab, slot)
   local prev_slot = fn.GetSlot(prefab)
   if prev_slot then
     fn.RemoveFromTable(items[prev_slot], fn.Equals(prefab), true)
-    fn.UpdateImageButtonsForSlot(prev_slot)
+    fn.UpdatePreviewsForSlot(prev_slot)
   end
 
   if not items[slot] then
@@ -210,22 +213,22 @@ function fn.SaveSlot(prefab, slot)
     -- Update slot table as `items` has been changed
   slots = fn.GetItemSlots()
 
-  fn.UpdateImageButtonsForSlot(slot)
+  fn.UpdatePreviewsForSlot(slot)
 end
 
 function fn.ClearSlot(prefab, slot)
   -- Remove from `items`
   fn.RemoveFromTable(items[slot], fn.Equals(prefab), true)
-  fn.ClearImage(prefab)
+  fn.ClearPreview(prefab)
 
   -- Update slot table as `items` has been changed
   slots = fn.GetItemSlots()
 
-  fn.UpdateImageButtonsForSlot(slot)
+  fn.UpdatePreviewsForSlot(slot)
 end
 
 function fn.HasSlot(prefab)
-  return not fn.GetSlot(prefab) == nil
+  return fn.GetSlot(prefab) ~= nil
 end
 
 function fn.GetItemOwner(item)
@@ -347,18 +350,23 @@ function fn.Inventory_OnNewActiveItem(inst, data)
 
   -- Logic itself is queued until all actions are resolved,
   -- this is necessary as the active item is first removed before
-  -- it's being put in the inventory, and we do not want to clear the manually_moved_equipment
-  -- before that has happened. QueueFunc will guarantee we first wait for the current
+  -- it's being put in the inventory, and we do not want to clear the manually moved equipment
+  -- before that has happened as we use its value there.
+  -- QueueFunc will guarantee we first wait for the current
   -- chain of events to finish.
   fn.QueueFunc(function()
-    if fn.IsEquipment(item) then
-      manually_moved_equipment = item
-    else
-      if manually_moved_equipment then
-        manually_moved_equipment = nil
-      end
-    end
+    fn.HandleNewActiveItem(item)
   end)
+end
+
+function fn.HandleNewActiveItem(new_item)
+  if fn.IsEquipment(new_item) then
+    manually_moved_equipment = new_item
+  else
+    if manually_moved_equipment then
+      manually_moved_equipment = nil
+    end
+  end
 end
 
 function fn.Inventory_GetNextAvailableSlot(original_fn)
@@ -414,7 +422,7 @@ function fn.Inventory_OnLoad(original_fn)
       items = data.save_equipment_slots
       slots = fn.GetItemSlots()
 
-      tasker:DoTaskInTime(0, fn.UpdateImageButtons)
+      tasker:DoTaskInTime(0, fn.UpdatePreviews)
     end
 
     return original_fn(self, data, newents)

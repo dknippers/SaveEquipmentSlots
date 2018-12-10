@@ -30,6 +30,9 @@ local image_buttons = {}
 -- as a new item.
 local manually_moved_equipment = nil
 
+-- true if we are currently in the process of equipping some equipment
+local is_equipping = false
+
 -- entity to run tasks with, necessary to gain access to DoTaskInTime()
 local tasker = CreateEntity()
 
@@ -70,7 +73,7 @@ function fn.GetItemSlots()
 end
 
 -- Returns the Inventory bar widget
-function fn.GetInventorybar()
+function fn.GetPlayerInventorybar()
   local player = GetPlayer()
   if player and player.HUD and player.HUD.controls then
     return player.HUD.controls.inv
@@ -86,7 +89,7 @@ function fn.CreateImageButton(prefab)
 
   image_button:SetScale(0.9)
 
-  local inventorybar = fn.GetInventorybar()
+  local inventorybar = fn.GetPlayerInventorybar()
 
   if inventorybar then
     inventorybar:AddChild(image_button)
@@ -102,7 +105,7 @@ function fn.UpdatePreviews()
 end
 
 function fn.UpdatePreviewsForSlot(slot)
-  local inventorybar = fn.GetInventorybar()
+  local inventorybar = fn.GetPlayerInventorybar()
   local invslot = inventorybar.inv[slot]
 
   if not invslot or not items[slot] then
@@ -242,14 +245,6 @@ function fn.IsEquipment(item)
   return item and item.components and item.components.equippable
 end
 
-function fn.GetEquipSlot(item)
-  if not fn.IsEquipment(item) then
-    return nil
-  end
-
-  return item.components.equippable.equipslot
-end
-
 -- Runs all functions in the fns table and removes them after
 function fn.RunFns()
   local len = #fns
@@ -276,6 +271,146 @@ function fn.QueueFunc(func)
       fn.RunFns()
       runfns_scheduled = false
     end)
+  end
+end
+
+function fn.HandleNewActiveItem(new_item)
+  if fn.IsEquipment(new_item) then
+    manually_moved_equipment = new_item
+  else
+    if manually_moved_equipment then
+      manually_moved_equipment = nil
+    end
+  end
+end
+
+function fn.ShareEquipSlot(itemA, itemB)
+  local equipslotA = fn.GetEquipSlot(itemA)
+  local equipslotB = fn.GetEquipSlot(itemB)
+
+  return equipslotA ~= nil and equipslotA == equipslotB
+end
+
+function fn.CanEquip(item, inventory)
+  local equipslot = fn.GetEquipSlot(item)
+  if equipslot then
+    return inventory.equipslots[equipslot] == nil
+  else
+    return false
+  end
+end
+
+-- Returns true when the given slot is available,
+-- which means it's either empty or contains an item that is not in
+-- its saved slot
+function fn.SlotIsAvailable(slot)
+  local inventory = fn.GetPlayerInventory()
+  if not inventory then
+    return false
+  end
+
+  local item_in_slot = inventory:GetItemInSlot(slot)
+  if not item_in_slot or not fn.IsEquipment(item_in_slot) then
+    return true
+  end
+
+  return fn.GetSlot(item_in_slot.prefab) ~= slot
+end
+
+function fn.GetPlayerInventory()
+  local player = GetPlayer()
+  if player then
+    return player.components.inventory
+  end
+end
+
+function fn.GetEquipSlot(item)
+  return fn.WhenEquippable(item, function(eq) return eq.equipslot end)
+end
+
+function fn.WhenEquippable(item, when, whenNot)
+  if fn.IsEquipment(item) then
+    return when(item.components.equippable)
+  else
+    return whenNot
+  end
+end
+
+function fn.Inventory_GetNextAvailableSlot(original_fn)
+  return function(self, item)
+    local saved_slot = fn.GetSlot(item.prefab)
+
+    if not saved_slot or not fn.IsEquipment(item) then
+      return original_fn(self, item)
+    end
+
+    local blocking_item = self:GetItemInSlot(saved_slot)
+    if blocking_item then
+      local blocking_item_saved_slot = fn.GetSlot(blocking_item.prefab)
+
+      -- blocking_item is moved if any of these conditions is true
+      -- 1) blocking_item is not equipment
+      -- 2) blocking_item is not in its saved slot, and its saved slot is available
+      -- 3) blocking_item is the same item but has more uses remaining than the incoming item
+      local move_blocking_item =
+        not fn.IsEquipment(blocking_item) or
+        (blocking_item_saved_slot ~= saved_slot and fn.SlotIsAvailable(blocking_item_saved_slot)) or
+        (blocking_item.prefab == item.prefab and fn.GetRemainingUses(blocking_item) > fn.GetRemainingUses(item))
+
+      -- Alternatively, the blocking_item will be equipped instead when all of the following is true
+      -- 1) we are not currently equipping some other item
+      -- 2) blocking_item cannot be moved
+      -- 3) blocking_item and item share the same equipslot
+      -- 4) blocking_item can be equipped immediately
+      local equip_blocking_item =
+        not is_equipping and
+        not move_blocking_item and
+        fn.ShareEquipSlot(item, blocking_item) and
+        fn.CanEquip(blocking_item, self)
+
+      if not move_blocking_item and not equip_blocking_item then
+        -- Let the game decide where to put the new equipment.
+        -- This would be the behavior of the normal game
+        return original_fn(self, item)
+      end
+
+      -- Record the fact we are automatically rearranging items
+      rearranging = rearranging + 1
+
+      if move_blocking_item then
+        -- We will move blocking_item by giving it to the inventory again,
+        -- as if it was just picked up.
+        -- Before doing so we clear its slot with our new item
+        -- otherwise the game would not move blocking_item at all,
+        -- presumably as it is already present in the inventory.
+        self.itemslots[saved_slot] = item
+
+        -- Find a new slot for the blocking item -- skipping the sound
+        self:GiveItem(blocking_item, nil, nil, true)
+
+        -- The saved_slot is cleared as we have made space by moving away blocking_item.
+        -- The game will be putting `item` in there at a slightly later time
+        self.itemslots[saved_slot] = nil
+      elseif equip_blocking_item then
+        self:Equip(blocking_item, false)
+      end
+
+      rearranging = rearranging - 1
+    end
+
+    -- Ending up here means the requested slot was available
+    -- or was made available
+    return saved_slot, self.itemslots
+  end
+end
+
+function fn.Inventory_Equip(original_fn)
+  return function(self, item, old_to_active)
+    is_equipping = true
+
+    original_fn(self, item, old_to_active)
+
+    is_equipping = false
   end
 end
 
@@ -359,63 +494,6 @@ function fn.Inventory_OnNewActiveItem(inst, data)
   end)
 end
 
-function fn.HandleNewActiveItem(new_item)
-  if fn.IsEquipment(new_item) then
-    manually_moved_equipment = new_item
-  else
-    if manually_moved_equipment then
-      manually_moved_equipment = nil
-    end
-  end
-end
-
-function fn.Inventory_GetNextAvailableSlot(original_fn)
-  return function(self, item)
-    local saved_slot = fn.GetSlot(item.prefab)
-
-    if not saved_slot or not fn.IsEquipment(item) then
-      return original_fn(self, item)
-    end
-
-    local blocking_item = self:GetItemInSlot(saved_slot)
-    if blocking_item then
-      -- blocking_item is moved if any of these conditions is true
-      -- 1) blocking_item is not equipment
-      -- 2) blocking_item is not in its saved slot
-      -- 3) blocking_item is the same item but has more uses remaining than the incoming item
-      local move_blocking_item =
-        not fn.IsEquipment(blocking_item) or
-        fn.GetSlot(blocking_item.prefab) ~= saved_slot or
-        (blocking_item.prefab == item.prefab and fn.GetRemainingUses(blocking_item) > fn.GetRemainingUses(item))
-
-      -- If we are not moving the blocking_item at all we will let the game decide where to put the
-      -- new equipment.
-      if not move_blocking_item then
-        return original_fn(self, item)
-      end
-
-      -- Let the game move the blocking item somewhere else
-      -- Before doing so we occupy its slot with our new item
-      -- otherwise the game would not move blocking_item at all,
-      -- presumably as it is already present in the inventory
-      self.itemslots[saved_slot] = item
-
-      -- Find a new slot for the blocking item -- skipping the sound
-      rearranging = rearranging + 1
-      self:GiveItem(blocking_item, nil, nil, true)
-      rearranging = rearranging - 1
-
-      -- We clear the saved_slot again, as the game will be putting
-      -- item in there at a slightly later time, not right now
-      self.itemslots[saved_slot] = nil
-    end
-
-    -- Ending up here means the requested slot was available
-    -- or was made available
-    return saved_slot, self.itemslots
-  end
-end
-
 function fn.Inventory_OnLoad(original_fn)
   return function(self, data, newents)
     if data.save_equipment_slots then
@@ -438,13 +516,14 @@ function fn.Inventory_OnSave(original_fn)
 end
 
 function fn.InventoryPostInit(self)
-  local player = GetPlayer()
+  local inventory = fn.GetPlayerInventory()
 
-  if player.components.inventory == self then
+  if inventory == self then
     self.inst:ListenForEvent("equip", fn.Inventory_OnEquip)
     self.inst:ListenForEvent("itemget", fn.Inventory_OnItemGet)
     self.inst:ListenForEvent("newactiveitem", fn.Inventory_OnNewActiveItem)
     self.GetNextAvailableSlot = fn.Inventory_GetNextAvailableSlot(self.GetNextAvailableSlot)
+    self.Equip = fn.Inventory_Equip(self.Equip)
     self.OnLoad = fn.Inventory_OnLoad(self.OnLoad)
     self.OnSave = fn.Inventory_OnSave(self.OnSave)
   end

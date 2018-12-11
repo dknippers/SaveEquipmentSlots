@@ -30,6 +30,10 @@ local image_buttons = {}
 -- as a new item.
 local manually_moved_equipment = nil
 
+-- represents an immovable object used to occupy an inventory slot temporarily
+-- when we are automatically rearranging items
+local IMMOVABLE_OBJECT = {}
+
 -- true if we are currently in the process of equipping some equipment
 local is_equipping = false
 
@@ -345,6 +349,13 @@ function fn.Inventory_GetNextAvailableSlot(original_fn)
     end
 
     local blocking_item = self:GetItemInSlot(saved_slot)
+
+    if blocking_item == IMMOVABLE_OBJECT then
+      -- we cannot do anything with the immovable object,
+      -- fallback to standard game behavior
+      return original_fn(self, item)
+    end
+
     if blocking_item then
       local blocking_item_saved_slot = fn.GetSlot(blocking_item.prefab)
 
@@ -360,13 +371,11 @@ function fn.Inventory_GetNextAvailableSlot(original_fn)
       -- Alternatively, the blocking_item will be equipped instead when all of the following is true
       -- 1) we are not currently equipping some other item
       -- 2) blocking_item is not being moved
-      -- 3) blocking_item is not the same type prefab as item
       -- 3) blocking_item and item share the same equipslot
       -- 4) blocking_item can be equipped immediately
       local equip_blocking_item =
         not is_equipping and
         not move_blocking_item and
-        blocking_item.prefab ~= item.prefab and
         fn.ShareEquipSlot(item, blocking_item) and
         fn.CanEquip(blocking_item, self)
 
@@ -380,12 +389,13 @@ function fn.Inventory_GetNextAvailableSlot(original_fn)
       rearranging = rearranging + 1
 
       if move_blocking_item then
-        -- We will move blocking_item by giving it to the inventory again,
-        -- as if it was just picked up.
-        -- Before doing so we clear its slot with our new item
-        -- otherwise the game would not move blocking_item at all,
+        -- before moving `blocking_item`, we occopy its slot with the immovable object
+        -- otherwise the game would not move `blocking_item` at all,
         -- presumably as it is already present in the inventory.
-        self.itemslots[saved_slot] = item
+        -- in addition, the immovable object makes sure this slot will not be touched
+        -- again in a recursive call to this method which would otherwise possibly try to
+        -- move the this item again or equip it.
+        self.itemslots[saved_slot] = IMMOVABLE_OBJECT
 
         -- Find a new slot for the blocking item -- skipping the sound
         self:GiveItem(blocking_item, nil, nil, true)
@@ -394,7 +404,7 @@ function fn.Inventory_GetNextAvailableSlot(original_fn)
         -- The game will be putting `item` in there at a slightly later time
         self.itemslots[saved_slot] = nil
       elseif equip_blocking_item then
-        self:Equip(blocking_item, false)
+        self:Equip(blocking_item)
       end
 
       rearranging = rearranging - 1
@@ -410,9 +420,11 @@ function fn.Inventory_Equip(original_fn)
   return function(self, item, old_to_active)
     is_equipping = true
 
-    original_fn(self, item, old_to_active)
+    local original_return = original_fn(self, item, old_to_active)
 
     is_equipping = false
+
+    return original_return
   end
 end
 
@@ -474,9 +486,10 @@ function fn.Inventory_OnItemGet(inst, data)
   -- Store equipment slot, only when not in the process of
   -- automatically rearranging items triggered by some other action
   -- and if the item was either manually moved or has never been picked up before.
-  -- The latter case makes sure the very first time an item is picked up the slot
-  -- it is put in is saved so on subsequent equip / unequip actions it will already
-  -- return to that first slot without the player having to put it there explicitly.
+  -- The latter case makes sure the very first time an item is picked up (or when
+  -- the slot was cleared by the user later) the slot it is put in is saved so on
+  -- subsequent equip / unequip actions it will already return to that first slot
+  -- without the player having to put it there explicitly.
   if rearranging == 0 and (manually_moved_equipment == item or not fn.HasSlot(item.prefab)) then
     fn.SaveSlot(item.prefab, slot)
   end

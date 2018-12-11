@@ -110,6 +110,11 @@ end
 
 function fn.UpdatePreviewsForSlot(slot)
   local inventorybar = fn.GetPlayerInventorybar()
+
+  if not inventorybar then
+    return
+  end
+
   local invslot = inventorybar.inv[slot]
 
   if not invslot or not items[slot] then
@@ -515,7 +520,9 @@ function fn.Inventory_OnLoad(original_fn)
       items = data.save_equipment_slots
       slots = fn.GetItemSlots()
 
-      tasker:DoTaskInTime(0, fn.UpdatePreviews)
+      -- TODO: make sure the HUD has initialized before calling this method
+      -- or bind to some some "HUD initialized" event and then update previews
+      fn.UpdatePreviews()
     end
 
     return original_fn(self, data, newents)

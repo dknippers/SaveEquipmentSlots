@@ -14,3 +14,19 @@ standalone = false
 
 icon_atlas = "modicon.xml"
 icon = "modicon.tex"
+
+configuration_options =
+{
+  {
+    name = "enable_previews",
+    label = "Slot Previews",
+    hover = "Shows a preview of the saved equipment above each inventory slot",
+
+    options = {
+      { description = "Enabled", data = true },
+      { description = "Disabled", data = false },
+    },
+
+    default = true
+  }
+}

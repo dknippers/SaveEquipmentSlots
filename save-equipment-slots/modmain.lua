@@ -10,10 +10,11 @@ local CreateEntity = GLOBAL.CreateEntity
 local SpawnPrefab = GLOBAL.SpawnPrefab
 local GetPlayer = GLOBAL.GetPlayer
 
-local Image = require("widgets/image")
 local ImageButton = require("widgets/imagebutton")
-local Inv = require("widgets/inventorybar")
-local InvSlot = require("widgets/invslot")
+
+local config = {
+  enable_previews = GetModConfigData("enable_previews"),
+}
 
 -- saved slot -> [item.prefab]
 local items = {}
@@ -102,13 +103,27 @@ function fn.CreateImageButton(prefab)
   return image_button
 end
 
+function fn.WhenIdle(func)
+  return function()
+    tasker:DoTaskInTime(0, func)
+  end
+end
+
 function fn.UpdatePreviews()
+  if not config.enable_previews then
+    return
+  end
+
   for slot, _ in pairs(items) do
     fn.UpdatePreviewsForSlot(slot)
   end
 end
 
 function fn.UpdatePreviewsForSlot(slot)
+  if not config.enable_previews then
+    return
+  end
+
   local inventorybar = fn.GetPlayerInventorybar()
 
   if not inventorybar then
@@ -519,10 +534,6 @@ function fn.Inventory_OnLoad(original_fn)
     if data.save_equipment_slots then
       items = data.save_equipment_slots
       slots = fn.GetItemSlots()
-
-      -- TODO: make sure the HUD has initialized before calling this method
-      -- or bind to some some "HUD initialized" event and then update previews
-      fn.UpdatePreviews()
     end
 
     return original_fn(self, data, newents)
@@ -553,6 +564,7 @@ end
 
 function fn.InitSaveEquipmentSlots()
   AddComponentPostInit("inventory", fn.InventoryPostInit)
+  AddGamePostInit(fn.WhenIdle(fn.UpdatePreviews))
 end
 
 fn.InitSaveEquipmentSlots()

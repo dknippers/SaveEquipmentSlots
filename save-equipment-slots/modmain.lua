@@ -14,6 +14,7 @@ local ImageButton = require("widgets/imagebutton")
 
 local config = {
   enable_previews = GetModConfigData("enable_previews"),
+  allow_equip_for_space = GetModConfigData("allow_equip_for_space")
 }
 
 -- saved slot -> [item.prefab]
@@ -77,11 +78,16 @@ function fn.GetItemSlots()
   return slots
 end
 
--- Returns the Inventory bar widget
-function fn.GetPlayerInventorybar()
+function fn.GetPlayerHud()
   local player = GetPlayer()
-  if player and player.HUD and player.HUD.controls then
-    return player.HUD.controls.inv
+  return player and player.HUD
+end
+
+-- Returns the Inventory bar widget
+function fn.GetPlayerInventorybar(player)
+  local hud = fn.GetPlayerHud()
+  if hud and hud.controls then
+    return hud.controls.inv
   end
 end
 
@@ -103,9 +109,22 @@ function fn.CreateImageButton(prefab)
   return image_button
 end
 
-function fn.WhenIdle(func)
-  return function()
-    tasker:DoTaskInTime(0, func)
+function fn.WhenIdle(onIdle)
+  tasker:DoTaskInTime(0, onIdle)
+end
+
+function fn.WhenHudIsReady(onReady, onFailed, remaining)
+  local remaining = remaining or 10
+
+  local hud = fn.GetPlayerHud()
+  if hud then
+    onReady(hud)
+  else
+    if remaining > 0 then
+      tasker:DoTaskInTime(0.5, function()
+        fn.WhenHudIsReady(onReady, onFailed, remaining - 1)
+      end)
+    end
   end
 end
 
@@ -389,11 +408,13 @@ function fn.Inventory_GetNextAvailableSlot(original_fn)
         (blocking_item.prefab == item.prefab and fn.GetRemainingUses(blocking_item) > fn.GetRemainingUses(item))
 
       -- Alternatively, the blocking_item will be equipped instead when all of the following is true
-      -- 1) we are not currently equipping some other item
-      -- 2) blocking_item is not being moved
-      -- 3) blocking_item and item share the same equipslot
-      -- 4) blocking_item can be equipped immediately
+      -- 1) it is enabled in config
+      -- 2) we are not currently equipping some other item
+      -- 3) blocking_item is not being moved
+      -- 4) blocking_item and item share the same equipslot
+      -- 5) blocking_item can be equipped immediately
       local equip_blocking_item =
+        config.allow_equip_for_space and
         not is_equipping and
         not move_blocking_item and
         fn.ShareEquipSlot(item, blocking_item) and
@@ -534,6 +555,10 @@ function fn.Inventory_OnLoad(original_fn)
     if data.save_equipment_slots then
       items = data.save_equipment_slots
       slots = fn.GetItemSlots()
+
+      fn.WhenHudIsReady(function()
+        fn.WhenIdle(fn.UpdatePreviews)
+      end)
     end
 
     return original_fn(self, data, newents)
@@ -564,7 +589,6 @@ end
 
 function fn.InitSaveEquipmentSlots()
   AddComponentPostInit("inventory", fn.InventoryPostInit)
-  AddGamePostInit(fn.WhenIdle(fn.UpdatePreviews))
 end
 
 fn.InitSaveEquipmentSlots()

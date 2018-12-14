@@ -28,5 +28,19 @@ configuration_options =
     },
 
     default = true
+  },
+
+  {
+    name = "allow_equip_for_space",
+    label = "Allow Equip For Space",
+    hover = "Allows an item to be equipped in order to make space for an incoming item.\n"..
+            "This will only happen when the incoming item and the blocking item share a saved slot.",
+
+    options = {
+      { description = "Enabled", data = true },
+      { description = "Disabled", data = false },
+    },
+
+    default = true
   }
 }

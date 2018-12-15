@@ -39,6 +39,9 @@ local IMMOVABLE_OBJECT = {}
 -- true if we are currently in the process of equipping some equipment
 local is_equipping = false
 
+-- true if we are restoring a saved game
+local is_loading = false
+
 -- entity to run tasks with, necessary to gain access to DoTaskInTime()
 local tasker = CreateEntity()
 
@@ -109,8 +112,10 @@ function fn.CreateImageButton(prefab)
   return image_button
 end
 
-function fn.WhenIdle(onIdle)
-  tasker:DoTaskInTime(0, onIdle)
+-- Runs the given function on the next processing cycle,
+-- after all current threads have finished or yielded
+function fn.OnNextCycle(onNextCycle)
+  tasker:DoTaskInTime(0, onNextCycle)
 end
 
 function fn.WhenHudIsReady(onReady, onFailed, remaining)
@@ -121,9 +126,11 @@ function fn.WhenHudIsReady(onReady, onFailed, remaining)
     onReady(hud)
   else
     if remaining > 0 then
-      tasker:DoTaskInTime(0.5, function()
+      fn.OnNextCycle(function()
         fn.WhenHudIsReady(onReady, onFailed, remaining - 1)
       end)
+    elseif type(onFailed) == "function" then
+      onFailed()
     end
   end
 end
@@ -503,7 +510,7 @@ function fn.Inventory_OnItemGet(inst, data)
   local item = data.item
   local slot = data.slot
 
-  if not fn.IsEquipment(item) or not slot then
+  if is_loading or not fn.IsEquipment(item) or not slot then
     return
   end
 
@@ -552,16 +559,18 @@ end
 
 function fn.Inventory_OnLoad(original_fn)
   return function(self, data, newents)
+    is_loading = true
+
+    original_fn(self, data, newents)
+
     if data.save_equipment_slots then
       items = data.save_equipment_slots
       slots = fn.GetItemSlots()
 
-      fn.WhenHudIsReady(function()
-        fn.WhenIdle(fn.UpdatePreviews)
-      end)
+      fn.WhenHudIsReady(fn.UpdatePreviews)
     end
 
-    return original_fn(self, data, newents)
+    is_loading = false
   end
 end
 

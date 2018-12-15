@@ -34,7 +34,7 @@ local manually_moved_equipment = nil
 
 -- represents an immovable object used to occupy an inventory slot temporarily
 -- when we are automatically rearranging items
-local IMMOVABLE_OBJECT = {}
+local IMMOVABLE_OBJECT = { components = {} }
 
 -- true if we are currently in the process of equipping some equipment
 local is_equipping = false
@@ -68,7 +68,7 @@ local rearranging = 0
 local fn = {}
 
 -- Generates a table of item.prefab -> slot,
--- based on the current contents of the `items` variable
+-- based on the current contents of the items variable
 function fn.GetItemSlots()
   local slots = {}
 
@@ -234,7 +234,8 @@ end
 
 function fn.GetRemainingUses(item)
   return fn.WhenFiniteUses(item, function(fu)
-    return fu.current
+    -- Never return nil, if .current is nil we return 0 instead.
+    return fu.current or 0
   end)
 end
 
@@ -267,18 +268,18 @@ function fn.SaveSlot(prefab, slot)
 
   table.insert(items[slot], prefab)
 
-    -- Update slot table as `items` has been changed
+    -- Update slot table as items has been changed
   slots = fn.GetItemSlots()
 
   fn.UpdatePreviewsForSlot(slot)
 end
 
 function fn.ClearSlot(prefab, slot)
-  -- Remove from `items`
+  -- Remove from items
   fn.RemoveFromTable(items[slot], fn.Equals(prefab), true)
   fn.ClearPreview(prefab)
 
-  -- Update slot table as `items` has been changed
+  -- Update slot table as items has been changed
   slots = fn.GetItemSlots()
 
   fn.UpdatePreviewsForSlot(slot)
@@ -294,7 +295,7 @@ function fn.GetItemOwner(item)
   end
 end
 
--- Specifies if `item` is equipment
+-- Specifies if item is equipment
 function fn.IsEquipment(item)
   return item and item.components and item.components.equippable
 end
@@ -314,14 +315,13 @@ function fn.RunFns()
   end
 end
 
--- Queues the specified function to be run after the currently
--- active coroutine has yielded
+-- Queues the specified function to be run on the next processing cycle
 function fn.QueueFunc(func)
   table.insert(fns, func)
 
   if not runfns_scheduled then
     runfns_scheduled = true
-    tasker:DoTaskInTime(0, function()
+    fn.OnNextCycle(function()
       fn.RunFns()
       runfns_scheduled = false
     end)
@@ -346,6 +346,12 @@ function fn.ShareEquipSlot(itemA, itemB)
 end
 
 function fn.CanEquip(item, inventory)
+  if is_equipping then
+    -- We are currently in the process of equipping something else,
+    -- we cannot equip any item now
+    return false
+  end
+
   local equipslot = fn.GetEquipSlot(item)
   if equipslot then
     return inventory.equipslots[equipslot] == nil
@@ -407,59 +413,70 @@ function fn.Inventory_GetNextAvailableSlot(original_fn)
     end
 
     if blocking_item then
-      local blocking_item_saved_slot = fn.GetSlot(blocking_item.prefab)
-
-      -- blocking_item is moved if any of these conditions is true
-      -- 1) blocking_item is not equipment
-      -- 2) blocking_item is not in its saved slot, and its saved slot is available
-      -- 3) blocking_item is the same item but has more uses remaining than the incoming item
-      local move_blocking_item =
-        not fn.IsEquipment(blocking_item) or
-        (blocking_item_saved_slot ~= saved_slot and fn.SlotIsAvailable(blocking_item_saved_slot)) or
-        (blocking_item.prefab == item.prefab and fn.IsFiniteUses(blocking_item) and fn.GetRemainingUses(blocking_item) > fn.GetRemainingUses(item))
-
-      -- Alternatively, the blocking_item will be equipped instead when all of the following is true
-      -- 1) it is enabled in config
-      -- 2) we are not currently equipping some other item
-      -- 3) blocking_item is not being moved
-      -- 4) blocking_item and item share the same equipslot
-      -- 5) blocking_item can be equipped immediately
-      local equip_blocking_item =
-        config.allow_equip_for_space and
-        not is_equipping and
-        not move_blocking_item and
-        fn.ShareEquipSlot(item, blocking_item) and
-        fn.CanEquip(blocking_item, self)
-
-      if not move_blocking_item and not equip_blocking_item then
-        -- Let the game decide where to put the new equipment.
-        -- This would be the behavior of the normal game
-        return original_fn(self, item)
-      end
-
-      -- Record the fact we are automatically rearranging items
-      rearranging = rearranging + 1
-
-      if move_blocking_item then
-        -- before moving `blocking_item`, we occopy its slot with the immovable object
-        -- otherwise the game would not move `blocking_item` at all,
+      local function MoveBlockingItem()
+        -- Before moving the item, we occupy its current slot with the immovable object
+        -- otherwise the game would not move blocking_item at all,
         -- presumably as it is already present in the inventory.
         -- in addition, the immovable object makes sure this slot will not be touched
         -- again in a recursive call to this method which would otherwise possibly try to
         -- move the this item again or equip it.
         self.itemslots[saved_slot] = IMMOVABLE_OBJECT
 
+        -- Record the fact we are automatically rearranging items
+        rearranging = rearranging + 1
+
         -- Find a new slot for the blocking item -- skipping the sound
         self:GiveItem(blocking_item, nil, nil, true)
 
+        rearranging = rearranging - 1
+
         -- The saved_slot is cleared as we have made space by moving away blocking_item.
-        -- The game will be putting `item` in there at a slightly later time
+        -- The game will be putting item in there at a slightly later time
         self.itemslots[saved_slot] = nil
-      elseif equip_blocking_item then
-        self:Equip(blocking_item)
       end
 
-      rearranging = rearranging - 1
+      local blocking_item_saved_slot = fn.GetSlot(blocking_item.prefab)
+
+      if not fn.IsEquipment(blocking_item) then
+        -- If blocking_item is not equipment, we always move it out of the way
+        MoveBlockingItem()
+      else
+        -- First check if this is one of the cases when blocking_item is equipped
+        -- to make space for the incoming item.
+        -- This will happen when all of the following is true:
+        -- 1) it is enabled in config
+        -- 2) blocking_item and item have the same saved_slot, which blocking_item is now blocking
+        -- 3) blocking_item can be equipped immediately
+        -- 4) blocking_item and item share the same equipslot
+        local equip_blocking_item =
+          config.allow_equip_for_space and
+          blocking_item_saved_slot == saved_slot and
+          fn.CanEquip(blocking_item, self) and
+          fn.ShareEquipSlot(item, blocking_item)
+
+        -- Determine if blocking_item will be moved to another slot
+        -- 1) blocking_item will not be equipped to make space
+        -- 2) blocking_item is not in its saved slot, and its saved slot is available
+        -- 3) blocking_item is the same item but has more uses remaining than the incoming item
+        local move_blocking_item =
+          not equip_blocking_item and
+          (blocking_item_saved_slot ~= saved_slot and fn.SlotIsAvailable(blocking_item_saved_slot)) or
+          (blocking_item.prefab == item.prefab and fn.IsFiniteUses(blocking_item) and fn.GetRemainingUses(blocking_item) > fn.GetRemainingUses(item))
+
+        if not move_blocking_item and not equip_blocking_item then
+          -- Let the game decide where to put the new equipment.
+          -- This would be the behavior of the normal game
+          return original_fn(self, item)
+        end
+
+        if equip_blocking_item then
+          -- We will equip blocking_item to make space
+          self:Equip(blocking_item)
+        else
+          -- Otherwise we just move blocking_item to some other slot.
+          MoveBlockingItem()
+        end
+      end
     end
 
     -- Ending up here means the requested slot was available
@@ -554,8 +571,8 @@ function fn.Inventory_OnNewActiveItem(inst, data)
   -- this is necessary as the active item is first removed before
   -- it's being put in the inventory, and we do not want to clear the manually moved equipment
   -- before that has happened as we use its value there.
-  -- QueueFunc will guarantee we first wait for the current
-  -- chain of events to finish.
+  -- QueueFunc will guarantee the queued functions are executed in order
+  -- as opposed to DoTaskInTime.
   fn.QueueFunc(function()
     fn.HandleNewActiveItem(item)
   end)
@@ -571,7 +588,9 @@ function fn.Inventory_OnLoad(original_fn)
       items = data.save_equipment_slots
       slots = fn.GetItemSlots()
 
-      fn.WhenHudIsReady(fn.UpdatePreviews)
+      if config.enable_previews then
+        fn.WhenHudIsReady(fn.UpdatePreviews)
+      end
     end
 
     is_loading = false

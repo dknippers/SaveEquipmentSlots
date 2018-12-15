@@ -225,7 +225,7 @@ function fn.RemoveFromTable(tbl, fn, one)
 end
 
 function fn.WhenFiniteUses(item, when, whenNot)
-  if item and item.components and item.components.finiteuses then
+  if fn.IsFiniteUses(item) then
     return when(item.components.finiteuses)
   else
     return whenNot
@@ -236,6 +236,10 @@ function fn.GetRemainingUses(item)
   return fn.WhenFiniteUses(item, function(fu)
     return fu.current
   end)
+end
+
+function fn.IsFiniteUses(item)
+  return item and item.components and item.components.finiteuses
 end
 
 function fn.GetSlot(prefab)
@@ -412,7 +416,7 @@ function fn.Inventory_GetNextAvailableSlot(original_fn)
       local move_blocking_item =
         not fn.IsEquipment(blocking_item) or
         (blocking_item_saved_slot ~= saved_slot and fn.SlotIsAvailable(blocking_item_saved_slot)) or
-        (blocking_item.prefab == item.prefab and fn.GetRemainingUses(blocking_item) > fn.GetRemainingUses(item))
+        (blocking_item.prefab == item.prefab and fn.IsFiniteUses(blocking_item) and fn.GetRemainingUses(blocking_item) > fn.GetRemainingUses(item))
 
       -- Alternatively, the blocking_item will be equipped instead when all of the following is true
       -- 1) it is enabled in config

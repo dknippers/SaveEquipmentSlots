@@ -34,7 +34,7 @@ local manually_moved_equipment = nil
 
 -- represents an immovable object used to occupy an inventory slot temporarily
 -- when we are automatically rearranging items
-local IMMOVABLE_OBJECT = {}
+local IMMOVABLE_OBJECT = { components = {} }
 
 -- true if we are currently in the process of equipping some equipment
 local is_equipping = false

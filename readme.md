@@ -1,5 +1,5 @@
 # Save Equipment Slots
-![modicon](save-equipment-slots/images/modicon.png?raw=true "modicon")
+![modicon](src/images/modicon.png?raw=true "modicon")
 
 Mod for Don't Starve and DLCs Reign of Giants, Shipwrecked, and Hamlet.
 

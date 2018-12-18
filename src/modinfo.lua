@@ -42,5 +42,20 @@ configuration_options =
     },
 
     default = true
+  },
+
+  {
+    name = "reserve_saved_slots",
+    label = "Reserve Saved Slots",
+    hover = "Tries to keep other items from being placed in a saved slot.\n"..
+            "If there are still other spots available, an item will be placed there rather than in a saved slot.\n"..
+            "When all other spots in the inventory (and backpack) are taken, a new item can be placed in a saved slot location",
+
+    options = {
+      { description = "Enabled", data = true },
+      { description = "Disabled", data = false },
+    },
+
+    default = false
   }
 }

@@ -232,7 +232,10 @@ function fn.GetRemainingUses(item)
   return fn.WhenFiniteUses(item, function(fu)
     -- Never return nil, if .current is nil we return 0 instead.
     return fu.current or 0
-  end)
+  end,
+  -- When the item does not have a finiteuses component
+  -- we treat it as never used, i.e. 100.
+  100)
 end
 
 function fn.IsFiniteUses(item)
@@ -433,44 +436,37 @@ function fn.Inventory_GetNextAvailableSlot(original_fn)
 
       local blocking_item_saved_slot = fn.GetSlot(blocking_item.prefab)
 
-      if not fn.IsEquipment(blocking_item) then
-        -- If blocking_item is not equipment, we always move it out of the way
+      if not fn.IsEquipment(blocking_item) or blocking_item_saved_slot ~= saved_slot then
+        -- blocking_item is not equipment (= not important)
+        -- or does not need to be in this slot -> move it away
         MoveBlockingItem()
       else
-        -- First check if this is one of the cases when blocking_item is equipped
-        -- to make space for the incoming item.
-        -- This will happen when all of the following is true:
-        -- 1) it is enabled in config
-        -- 2) blocking_item and item have the same saved_slot, which blocking_item is now blocking
-        -- 3) blocking_item can be equipped immediately
-        -- 4) blocking_item and item share the same equipslot
+        -- If enabled in config and if currently possible
+        -- the blocking_item will be equipped
         local equip_blocking_item =
           config.allow_equip_for_space and
-          blocking_item_saved_slot == saved_slot and
-          fn.CanEquip(blocking_item, self) and
-          fn.ShareEquipSlot(item, blocking_item)
+          fn.CanEquip(blocking_item, self)
 
-        -- Determine if blocking_item will be moved to another slot
-        -- 1) blocking_item will not be equipped to make space
-        -- 2) blocking_item is not in its saved slot, and its saved slot is available
-        -- 3) blocking_item is the same item but has more uses remaining than the incoming item
+        -- If we are not going to equip the blocking_item, we move it away only when
+        -- the incoming item is the same item but with fewer uses
+        -- remaining so we can deplete it first, freeing up inventory
+        -- space more quickly than if we had kept the blocking_item in its slot
         local move_blocking_item =
           not equip_blocking_item and
-          (blocking_item_saved_slot ~= saved_slot and fn.SlotIsAvailable(blocking_item_saved_slot)) or
-          (blocking_item.prefab == item.prefab and fn.IsFiniteUses(blocking_item) and fn.GetRemainingUses(blocking_item) > fn.GetRemainingUses(item))
-
-        if not move_blocking_item and not equip_blocking_item then
-          -- Let the game decide where to put the new equipment.
-          -- This would be the behavior of the normal game
-          return original_fn(self, item)
-        end
+          blocking_item.prefab == item.prefab and
+          fn.IsFiniteUses(item) and
+          fn.GetRemainingUses(item) < fn.GetRemainingUses(blocking_item)
 
         if equip_blocking_item then
           -- We will equip blocking_item to make space
           self:Equip(blocking_item)
-        else
+        elseif move_blocking_item then
           -- Otherwise we just move blocking_item to some other slot.
           MoveBlockingItem()
+        else
+          -- Let the game decide where to put the new equipment.
+          -- This would be the behavior of the normal game
+          return original_fn(self, item)
         end
       end
     end

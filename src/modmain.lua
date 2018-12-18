@@ -1,7 +1,3 @@
--- Development only
--- GLOBAL.CHEATS_ENABLED = true
--- GLOBAL.require('debugkeys')
-
 -- Lua built-ins that are only accessible through GLOBAL
 local require = GLOBAL.require
 

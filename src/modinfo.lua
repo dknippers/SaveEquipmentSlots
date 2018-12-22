@@ -22,7 +22,8 @@ configuration_options =
   {
     name = "enable_previews",
     label = "Slot Previews",
-    hover = "Shows a preview of the saved equipment above each inventory slot",
+    hover = "Shows a preview of the saved equipment above each inventory slot.\n"..
+            "Click a preview to clear the saved slot of that equipment.",
 
     options = {
       { description = "Enabled", data = true },
@@ -35,9 +36,7 @@ configuration_options =
   {
     name = "allow_equip_for_space",
     label = "Allow Equip For Space",
-    hover = "Allows an item to be equipped in order to make space for an incoming item.\n"..
-            "This will only happen when the incoming item and the blocking item share a saved slot.",
-
+    hover = "Allows an item to be equipped in order to make space for an incoming item.",
     options = {
       { description = "Enabled", data = true },
       { description = "Disabled", data = false },
@@ -49,9 +48,8 @@ configuration_options =
   {
     name = "reserve_saved_slots",
     label = "Reserve Saved Slots",
-    hover = "Tries to keep other items from being placed in a saved slot.\n"..
-            "If there are still other spots available, an item will be placed there rather than in a saved slot.\n"..
-            "When all other spots in the inventory (and backpack) are taken, a new item can be placed in a saved slot location",
+    hover = "Only put new items in saved slots when there is no other alternative slot\n"..
+            "available in the inventory or backpack.",
 
     options = {
       { description = "Enabled", data = true },

@@ -1,10 +1,12 @@
 -- Lua built-ins that are only accessible through GLOBAL
 local require = GLOBAL.require
 
+-- Detect Don't Starve Together
+local is_dst = GLOBAL.TheSim:GetGameID() == "DST"
+
 -- DS globals
 local CreateEntity = GLOBAL.CreateEntity
 local SpawnPrefab = GLOBAL.SpawnPrefab
-local GetPlayer = GLOBAL.GetPlayer
 
 local ImageButton = require("widgets/imagebutton")
 
@@ -39,9 +41,6 @@ local RESERVED = { components = {} }
 -- true if we are currently in the process of equipping some equipment
 local is_equipping = false
 
--- true if we are restoring a saved game
-local is_loading = false
-
 -- entity to run tasks with, necessary to gain access to DoTaskInTime()
 local tasker = CreateEntity()
 
@@ -60,12 +59,29 @@ local runfns_scheduled = false
 -- item at a time through recursive calls to
 local rearranging = 0
 
+-- Table to hold all local state of this mod.
+-- TODO: Migrate all local mod state variables above to this table.
+local state = {
+  hud = {
+    inventorybar = nil
+  }
+}
+
 -- All functions will be stored in this table,
 -- in this way we can bypass the Lua limitation that
 -- a function X can only call other local functions that
 -- are declared before X is declared.
 -- When storing them all in a table, this limitation is removed.
 local fn = {}
+
+function fn.GetPlayer()
+  if is_dst then
+    -- It is renamed and a variable in DST
+    return GLOBAL.ThePlayer
+  else
+    return GLOBAL.GetPlayer()
+  end
+end
 
 -- Generates a table of item.prefab -> slot,
 -- based on the current contents of the items variable
@@ -107,32 +123,30 @@ function fn.UndoReserveSavedSlots(inventory)
 end
 
 function fn.GetPlayerHud()
-  local player = GetPlayer()
+  local player = fn.GetPlayer()
   return player and player.HUD
 end
 
--- Returns the Inventory bar widget
-function fn.GetPlayerInventorybar(player)
-  local hud = fn.GetPlayerHud()
-  if hud and hud.controls then
-    return hud.controls.inv
-  end
-end
-
 function fn.CreateImageButton(prefab)
+  if not state.hud.inventorybar then
+    return
+  end
+
   local item = SpawnPrefab(prefab)
-  local image_button = ImageButton(item.components.inventoryitem:GetAtlas(), item.components.inventoryitem:GetImage())
+
+  if not item then
+    return
+  end
+
+  local inventory_item = is_dst and item.replica.inventoryitem or item.components.inventoryitem
+  local image_button = ImageButton(inventory_item:GetAtlas(), inventory_item:GetImage())
 
   -- Item was only used for its GetAtlas() and GetImage() functions and can be removed immediately
   item:Remove()
 
   image_button:SetScale(0.9)
 
-  local inventorybar = fn.GetPlayerInventorybar()
-
-  if inventorybar then
-    inventorybar:AddChild(image_button)
-  end
+  state.hud.inventorybar:AddChild(image_button)
 
   return image_button
 end
@@ -143,47 +157,18 @@ function fn.OnNextCycle(onNextCycle)
   tasker:DoTaskInTime(0, onNextCycle)
 end
 
-function fn.WhenHudIsReady(onReady, onFailed, remaining)
-  local remaining = remaining or 10
-
-  local hud = fn.GetPlayerHud()
-  if hud then
-    onReady(hud)
-  else
-    if remaining > 0 then
-      fn.OnNextCycle(function()
-        fn.WhenHudIsReady(onReady, onFailed, remaining - 1)
-      end)
-    elseif type(onFailed) == "function" then
-      onFailed()
-    end
-  end
-end
-
-function fn.UpdatePreviews()
-  if not config.enable_previews then
-    return
-  end
-
-  for slot, _ in pairs(items) do
-    fn.UpdatePreviewsForSlot(slot)
-  end
-end
-
 function fn.UpdatePreviewsForSlot(slot)
-  if not config.enable_previews then
+  if not config.enable_previews or not items[slot] then
     return
   end
 
-  local inventorybar = fn.GetPlayerInventorybar()
-
-  if not inventorybar then
+  if not state.hud.inventorybar then
     return
   end
 
-  local invslot = inventorybar.inv[slot]
+  local invslot = state.hud.inventorybar.inv[slot]
 
-  if not invslot or not items[slot] then
+  if not invslot then
     return
   end
 
@@ -198,7 +183,7 @@ function fn.UpdatePreviewsForSlot(slot)
       fn.ClearSlot(prefab, slot)
     end)
 
-    fn.UpdateImageButtonPosition(image_button, item_index, inventorybar, invslot)
+    fn.UpdateImageButtonPosition(image_button, item_index, state.hud.inventorybar, invslot)
   end
 end
 
@@ -251,6 +236,19 @@ end
 
 function fn.IsContainer(o)
   return o and o.components and o.components.container
+end
+
+function fn.callOrValue(v)
+  return type(v) == "function" and v() or v
+end
+
+function fn.IfHasComponent(o, component_name, ifFn, ifNot)
+  if o and o.components and o.components[component_name] then
+    local component = o.components[component_name]
+    return type(ifFn) == "function" and ifFn(component) or component
+  else
+    return fn.callOrValue(ifNot)
+  end
 end
 
 function fn.WhenFiniteUses(item, when, whenNot)
@@ -390,13 +388,6 @@ function fn.CanEquip(item, inventory)
   end
 end
 
-function fn.GetPlayerInventory()
-  local player = GetPlayer()
-  if player then
-    return player.components.inventory
-  end
-end
-
 function fn.GetEquipSlot(item)
   return fn.WhenEquippable(item, function(eq) return eq.equipslot end)
 end
@@ -406,6 +397,14 @@ function fn.WhenEquippable(item, when, whenNot)
     return when(item.components.equippable)
   else
     return whenNot
+  end
+end
+
+function fn.GetOverflowContainer(inventory)
+  if is_dst then
+    return inventory:GetOverflowContainer()
+  else
+    return fn.IfHasComponent(inventory.overflow, "container")
   end
 end
 
@@ -420,12 +419,14 @@ function fn.TrySkipSavedSlots(inventory, item, original_fn)
   if original_slot == nil and original_container == inventory.itemslots then
     -- Game reports no space, but is unaware of the overflow in most scenarios
     -- so we will check it again ourselves and put the item there if possible
-    if fn.IsContainer(inventory.overflow) then
-      local container = inventory.overflow.components.container
+    local container = fn.GetOverflowContainer(inventory)
+    local overflow = is_dst and container or inventory.overflow
+
+    if container then
       for i = 1, container.numslots do
         if container.slots[i] == nil then
           if container:GiveItem(item, nil, nil, false, true) then
-            return 0, inventory.overflow
+            return 0, overflow
           end
         end
       end
@@ -574,7 +575,7 @@ function fn.Inventory_OnItemGet(inst, data)
   local item = data.item
   local slot = data.slot
 
-  if not slot or is_loading or rearranging > 0 or not fn.IsEquipment(item) then
+  if not slot or rearranging > 0 or not fn.IsEquipment(item) then
     return
   end
 
@@ -619,20 +620,12 @@ end
 
 function fn.Inventory_OnLoad(original_fn)
   return function(self, data, newents)
-    is_loading = true
-
     original_fn(self, data, newents)
 
     if data.save_equipment_slots then
       items = data.save_equipment_slots
       slots = fn.GetItemSlots()
-
-      if config.enable_previews then
-        fn.WhenHudIsReady(fn.UpdatePreviews)
-      end
     end
-
-    is_loading = false
   end
 end
 
@@ -644,22 +637,40 @@ function fn.Inventory_OnSave(original_fn)
   end
 end
 
-function fn.InventoryPostInit(self)
-  local inventory = fn.GetPlayerInventory()
-
-  if inventory == self then
-    self.inst:ListenForEvent("equip", fn.Inventory_OnEquip)
-    self.inst:ListenForEvent("itemget", fn.Inventory_OnItemGet)
-    self.inst:ListenForEvent("newactiveitem", fn.Inventory_OnNewActiveItem)
-    self.GetNextAvailableSlot = fn.Inventory_GetNextAvailableSlot(self.GetNextAvailableSlot)
-    self.Equip = fn.Inventory_Equip(self.Equip)
-    self.OnLoad = fn.Inventory_OnLoad(self.OnLoad)
-    self.OnSave = fn.Inventory_OnSave(self.OnSave)
-  end
+function fn.InitInventory(self)
+  self.inst:ListenForEvent("equip", fn.Inventory_OnEquip)
+  self.inst:ListenForEvent("itemget", fn.Inventory_OnItemGet)
+  self.inst:ListenForEvent("newactiveitem", fn.Inventory_OnNewActiveItem)
+  self.GetNextAvailableSlot = fn.Inventory_GetNextAvailableSlot(self.GetNextAvailableSlot)
+  self.Equip = fn.Inventory_Equip(self.Equip)
+  self.OnSave = fn.Inventory_OnSave(self.OnSave)
 end
 
 function fn.InitSaveEquipmentSlots()
-  AddComponentPostInit("inventory", fn.InventoryPostInit)
+  AddPlayerPostInit(function(player)
+    fn.OnNextCycle(function()
+      if player == fn.GetPlayer() then
+        -- Only initialize for the current player
+        fn.IfHasComponent(player, "inventory", fn.InitInventory)
+      end
+    end)
+  end)
+
+  AddComponentPostInit("inventory", function(self)
+    -- AddPlayerPostInit triggers after Inventory.OnLoad
+    -- so we use AddComponentPostInit for this specific one
+    self.OnLoad = fn.Inventory_OnLoad(self.OnLoad)
+  end)
+
+  AddClassPostConstruct("widgets/inventorybar", function(inventorybar)
+    state.hud.inventorybar = inventorybar
+  end)
+
+  AddClassPostConstruct("widgets/invslot", function(invslot)
+    fn.OnNextCycle(function()
+      fn.UpdatePreviewsForSlot(invslot.num)
+    end)
+  end)
 end
 
 fn.InitSaveEquipmentSlots()

@@ -631,24 +631,20 @@ function fn.MakeInventory(inventory, is_mastersim)
   end
 
   function inv.CanEquip(item)
-    if not fn.IsEquipment(item) then
+    if is_equipping or not fn.IsEquipment(item) then
       return false
     end
 
     local eslot = fn.GetEquipSlot(item)
-    fn.debug("eslot = " .. tostring(eslot))
-
     local equipped_item = inv.GetEquippedItem(eslot)
-
-    fn.debug("equipped_item = "..tostring(equipped_item and equipped_item.prefab or nil))
 
     return not equipped_item
   end
 
-  function inv.GetFreeSlot()
+  function inv.GetFreeSlot(skip)
     local num_items = inventory:GetNumSlots()
     for slot = 1, num_items do
-      if not inv.GetItem(slot) then
+      if slot ~= skip and not inv.GetItem(slot) then
         return slot
       end
     end
@@ -661,25 +657,22 @@ function fn.MakeInventory(inventory, is_mastersim)
 
     local function trueCallback() fn.IfFn(callback, true) end
     local function falseCallback() fn.IfFn(callback, false) end
+    local function variableCallback(success) fn.IfFn(callback, success) end
 
     if not blocking_item then
       trueCallback()
       return true
     end
 
-    fn.debug("incoming item = "..item.prefab)
-    fn.debug("blocking_item = " .. blocking_item.prefab)
-
     if blocking_item == OCCUPIED then
       falseCallback()
       return false
     end
 
-    local free_slot = inv.GetFreeSlot()
     local blocking_item_saved_slot = fn.GetSlot(blocking_item.prefab)
 
     if not fn.IsEquipment(blocking_item) or blocking_item_saved_slot ~= target_slot then
-      inv.Move(target_slot, free_slot, trueCallback)
+      inv.Move(target_slot, variableCallback)
       return true
     end
 
@@ -699,11 +692,9 @@ function fn.MakeInventory(inventory, is_mastersim)
       return false
     else
       if equip_blocking_item then
-        fn.debug("equipping")
         inv.Equip(blocking_item, trueCallback)
       elseif move_blocking_item then
-        fn.debug("moving")
-        inv.Move(target_slot, free_slot, trueCallback)
+        inv.Move(target_slot, variableCallback)
       end
 
       -- It was either equipped or moved
@@ -743,15 +734,27 @@ function fn.MakeInventory(inventory, is_mastersim)
       inventory:Equip(item)
     end
   else
+    local function CancelRefreshTask()
+      inventory.classified._refreshtask:Cancel()
+      inventory.classified._refreshtask = nil
+      inventory.classified._busy = false
+    end
+
     local function IsBusy()
       return inventory.classified and inventory.classified._busy
     end
 
-    local function whenNotBusy(whenFn)
+    local function whenNotBusy(whenFn, triedToCancel)
       if IsBusy() then
-        fn.OnNextCycle(function()
-          whenNotBusy(whenFn)
-        end)
+        if not triedToCancel and inventory.classified._refreshtask then
+          CancelRefreshTask()
+          -- Try again immediately but when still busy we will wait till the next cycle.
+          whenNotBusy(whenFn, true)
+        else
+          fn.OnNextCycle(function()
+            whenNotBusy(whenFn)
+          end)
+        end
       else
         whenFn()
       end
@@ -771,16 +774,45 @@ function fn.MakeInventory(inventory, is_mastersim)
       end)
     end
 
-    function inv.Move(from, to, nextFn)
-      fn.debug("Moving from "..from.." to "..to)
+    local function ReturnActiveItem(nextFn)
+      whenNotBusy(function()
+        inventory:ReturnActiveItem()
+        fn.IfFn(nextFn)
+      end)
+    end
+
+    local function DropItem(slot, nextFn)
+      whenNotBusy(function()
+        local item = inventory:GetItemInSlot(slot)
+        inventory:DropItemFromInvTile(item)
+        fn.IfFn(nextFn)
+      end)
+    end
+
+    function inv.Move(from, nextFn)
+      local free_slot = inv.GetFreeSlot(from)
+      if not free_slot then
+        fn.IfFn(nextFn, false)
+        return false
+      end
+
       rearranging = rearranging + 1
       whenNotBusy(function()
         ToActiveItem(from, function()
           whenNotBusy(function()
-            ActiveItemToSlot(to, function()
+            free_slot = inv.GetFreeSlot(from)
+            if not free_slot then
               rearranging = rearranging - 1
-              fn.IfFn(nextFn)
-            end)
+              ReturnActiveItem(function()
+                fn.IfFn(nextFn, false)
+              end)
+              return false
+            else
+               ActiveItemToSlot(free_slot, function()
+                rearranging = rearranging - 1
+                fn.IfFn(nextFn, true)
+              end)
+            end
           end)
         end)
       end)
@@ -842,11 +874,6 @@ function fn.InitSaveEquipmentSlots()
       fn.UpdatePreviewsForSlot(invslot.num)
     end)
   end)
-end
-
-function fn.debug(msg)
-  local prefix = "SaveEquipmentSlots | "
-  print(prefix .. msg)
 end
 
 fn.InitSaveEquipmentSlots()

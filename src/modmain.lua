@@ -242,8 +242,8 @@ function fn.RemoveFromTable(tbl, fn, one)
   end
 end
 
-function fn.callOrValue(v)
-  return type(v) == "function" and v() or v
+function fn.callOrValue(v, ...)
+  return type(v) == "function" and v(...) or v
 end
 
 function fn.GetComponent(o, component_name)
@@ -251,7 +251,7 @@ function fn.GetComponent(o, component_name)
     if state.is_mastersim then
       return o.components and o.components[component_name]
     else
-      -- if not master you can only interact with the replica
+      -- non mastersims only interact with the replica
       return o.replica and o.replica[component_name]
     end
   end
@@ -462,7 +462,11 @@ function fn.Inventory_GetNextAvailableSlot(original_fn)
       end
     end
 
-    local resolved = fn.ResolveBlock(self, item, saved_slot)
+    if not state.inventory then
+      return original_fn(self, item)
+    end
+
+    local resolved = state.inventory.ResolveBlock(saved_slot, item)
 
     if not resolved then
       if config.reserve_saved_slots then
@@ -477,79 +481,6 @@ function fn.Inventory_GetNextAvailableSlot(original_fn)
       return saved_slot, self.itemslots
     end
   end
-end
-
-function fn.ResolveBlock(inventory, item, saved_slot)
-  local blocking_item = inventory:GetItemInSlot(saved_slot)
-
-  if blocking_item == OCCUPIED then
-    -- The slot is occupied by us,
-    -- we cannot resolve it.
-    return false
-  end
-
-  if blocking_item then
-    local function MoveBlockingItem()
-      -- Before moving the item, we occupy its current slot with the OCCUPIED object
-      -- otherwise the game would not move blocking_item at all,
-      -- presumably as it is already present in the inventory.
-      -- In addition, the OCCUPIED object makes sure this slot will not be touched
-      -- again in a recursive call to this method which would otherwise possibly try to
-      -- move the this item again or equip it.
-      inventory.itemslots[saved_slot] = OCCUPIED
-
-      -- Record the fact we are automatically rearranging items
-      rearranging = rearranging + 1
-
-      -- Find a new slot for the blocking item -- skipping the sound
-      inventory:GiveItem(blocking_item, nil, nil, true)
-
-      rearranging = rearranging - 1
-
-      -- The saved_slot is cleared as we have made space by moving away blocking_item.
-      -- The game will be putting item in there at a slightly later time
-      inventory.itemslots[saved_slot] = nil
-    end
-
-    local blocking_item_saved_slot = fn.GetSlot(blocking_item.prefab)
-
-    if not fn.IsEquipment(blocking_item) or blocking_item_saved_slot ~= saved_slot then
-      -- blocking_item is not equipment (= not important)
-      -- or does not need to be in this slot -> move it away
-      MoveBlockingItem()
-    else
-      -- If enabled in config and if currently possible
-      -- the blocking_item will be equipped
-      local equip_blocking_item =
-        config.allow_equip_for_space and
-        fn.CanEquip(blocking_item, inventory)
-
-      -- If we are not going to equip the blocking_item, we move it away only when
-      -- the incoming item is the same item but with fewer uses
-      -- remaining so we can deplete it first, freeing up inventory
-      -- space more quickly than if we had kept the blocking_item in its slot
-      local move_blocking_item =
-        not equip_blocking_item and
-        blocking_item.prefab == item.prefab and
-        fn.IsFiniteUses(item) and
-        fn.GetRemainingUses(item) < fn.GetRemainingUses(blocking_item)
-
-      if equip_blocking_item then
-        -- We will equip blocking_item to make space
-        inventory:Equip(blocking_item)
-      elseif move_blocking_item then
-        -- Otherwise we just move blocking_item to some other slot.
-        MoveBlockingItem()
-      else
-        -- Not resolved
-        return false
-      end
-    end
-  end
-
-  -- Ending up here means the requested slot was available
-  -- or was made available
-  return true
 end
 
 function fn.Inventory_Equip(original_fn)
@@ -679,9 +610,9 @@ function fn.Inventory_OnSave(original_fn)
   end
 end
 
-function fn.IfFn(value)
+function fn.IfFn(value, ...)
   if type(value) == "function" then
-    value()
+    value(...)
   end
 end
 
@@ -728,16 +659,19 @@ function fn.MakeInventory(inventory, is_mastersim)
   function inv.ResolveBlock(target_slot, item, callback)
     local blocking_item = inv.GetItem(target_slot)
 
+    local function trueCallback() fn.IfFn(callback, true) end
+    local function falseCallback() fn.IfFn(callback, false) end
+
     if not blocking_item then
-      callback(true)
+      trueCallback()
       return true
     end
 
-    fn.debug("Resolving block for "..item.prefab)
+    fn.debug("incoming item = "..item.prefab)
     fn.debug("blocking_item = " .. blocking_item.prefab)
 
     if blocking_item == OCCUPIED then
-      callback(false)
+      falseCallback()
       return false
     end
 
@@ -745,9 +679,7 @@ function fn.MakeInventory(inventory, is_mastersim)
     local blocking_item_saved_slot = fn.GetSlot(blocking_item.prefab)
 
     if not fn.IsEquipment(blocking_item) or blocking_item_saved_slot ~= target_slot then
-      inv.Move(target_slot, free_slot, function()
-        callback(true)
-      end)
+      inv.Move(target_slot, free_slot, trueCallback)
       return true
     end
 
@@ -763,19 +695,15 @@ function fn.MakeInventory(inventory, is_mastersim)
 
     if not equip_blocking_item and not move_blocking_item then
       -- Not resolved
-      callback(false)
+      falseCallback()
       return false
     else
       if equip_blocking_item then
         fn.debug("equipping")
-        inv.Equip(blocking_item, function()
-          callback(true)
-        end)
+        inv.Equip(blocking_item, trueCallback)
       elseif move_blocking_item then
         fn.debug("moving")
-        inv.Move(target_slot, free_slot, function()
-          callback(true)
-        end)
+        inv.Move(target_slot, free_slot, trueCallback)
       end
 
       -- It was either equipped or moved
@@ -784,7 +712,36 @@ function fn.MakeInventory(inventory, is_mastersim)
   end
 
   if is_mastersim then
-    -- TODO: inv.Move + inv.Equip
+    function inv.Move(from)
+      local blocking_item = inventory.itemslots[from]
+      if not blocking_item then
+        return
+      end
+
+      -- Before moving the item, we occupy its current slot with the OCCUPIED object
+      -- otherwise the game would not move blocking_item at all,
+      -- presumably as it is already present in the inventory.
+      -- In addition, the OCCUPIED object makes sure this slot will not be touched
+      -- again in a recursive call to this method which would otherwise possibly try to
+      -- move the this item again or equip it.
+      inventory.itemslots[from] = OCCUPIED
+
+      -- Record the fact we are automatically rearranging items
+      rearranging = rearranging + 1
+
+      -- Find a new slot for the blocking item -- skipping the sound
+      inventory:GiveItem(blocking_item, nil, nil, true)
+
+      rearranging = rearranging - 1
+
+      -- The saved_slot is cleared as we have made space by moving away blocking_item.
+      -- The game will be putting item in there at a slightly later time
+      inventory.itemslots[from] = nil
+    end
+
+    function inv.Equip(item)
+      inventory:Equip(item)
+    end
   else
     local function IsBusy()
       return inventory.classified and inventory.classified._busy
@@ -843,7 +800,7 @@ function fn.MakeInventory(inventory, is_mastersim)
 end
 
 function fn.InitInventory(inventory)
-  state.inventory = fn.MakeInventory(inventory)
+  state.inventory = fn.MakeInventory(inventory, state.is_mastersim)
 
   inventory.inst:ListenForEvent("equip", fn.Inventory_OnEquip)
   inventory.inst:ListenForEvent("itemget", fn.Inventory_OnItemGet)

@@ -181,7 +181,6 @@ function fn.UpdatePreviewsForSlot(slot)
       image_button = fn.CreateImageButton(prefab)
 
       if not image_button then
-        fn.debug("fn.UpdatePreviewsForSlot: NO IMAGE_BUTTON")
         return
       end
 
@@ -402,7 +401,11 @@ function fn.CanEquip(item, inventory)
 end
 
 function fn.GetEquipSlot(item)
-  return fn.WhenEquippable(item, function(eq) return eq.equipslot end)
+  return fn.WhenEquippable(item, function(eq)
+    local equipslot = eq.EquipSlot and eq:EquipSlot() or eq.equipslot
+    fn.debug("is equippable, equipslot = " .. tostring(equipslot))
+    return equipslot
+  end)
 end
 
 function fn.WhenEquippable(item, when, whenNot)
@@ -481,7 +484,7 @@ function fn.ResolveBlock(inventory, item, saved_slot)
   local blocking_item = inventory:GetItemInSlot(saved_slot)
 
   if blocking_item == OCCUPIED then
-    -- The slot is occupied by us,`
+    -- The slot is occupied by us,
     -- we cannot resolve it.
     return false
   end
@@ -613,38 +616,36 @@ function fn.Inventory_OnItemGet(inst, data)
   end
 
   local saved_slot = fn.GetSlot(item.prefab)
+  local item_in_saved_slot = state.inventory.GetItem(saved_slot)
+  local prefab_is_in_saved_slot = item_in_saved_slot and item_in_saved_slot.prefab == item.prefab
 
-  if saved_slot then
-    local existing_item = state.inventory.GetItem(saved_slot)
-    if existing_item then
-      if existing_item.prefab == item.prefab then
-        -- If another copy of the same equipment is available in the inventory and
-        -- is in its saved slot, we do NOT save the new slot of this equipment.
-        -- This is to prevent unintentionally changing the saved equipment slot
-        -- when an additional copy of the item is picked up while you already
-        -- have a copy of the item in the previously saved slot.
-        return
-      elseif not state.is_master and saved_slot ~= slot then
-        fn.debug("resolving")
-        state.inventory.ResolveBlock(saved_slot, item, function()
-          -- saved_slot is now free
-          fn.debug("should be free")
-          state.inventory.Move(slot, saved_slot)
-        end, function()
-          fn.debug("slot " .. saved_slot .. " is still blocked!")
-        end)
-      end
-    end
-  end
-
-  -- Store equipment slot if the item was either manually moved
+  -- Save equipment slot if the item was either manually moved
   -- or has never been picked up before.
   -- The latter case makes sure the very first time an item is picked up (or when
   -- the slot was cleared by the user later) the slot it is put in is saved so on
   -- subsequent equip / unequip actions it will already return to that first slot
   -- without the player having to put it there explicitly.
-  if manually_moved_equipment == item or not fn.HasSlot(item.prefab) then
+  local save_slot = not prefab_is_in_saved_slot and (manually_moved_equipment == item or not fn.HasSlot(item.prefab))
+
+  if save_slot then
     fn.SaveSlot(item.prefab, slot)
+  elseif saved_slot and slot ~= saved_slot and not state.is_master then
+    -- DST to remote host: make sure item returns to its slot here
+    local function move()
+      state.inventory.Move(slot, saved_slot)
+    end
+
+    if item_in_saved_slot then
+      state.inventory.ResolveBlock(saved_slot, item, function(resolved)
+        fn.debug("Resolved = " .. tostring(resolved))
+        if resolved then
+          move()
+        end
+      end)
+    else
+      fn.debug("Just move it")
+      move()
+    end
   end
 end
 
@@ -681,20 +682,16 @@ function fn.Inventory_OnSave(original_fn)
   end
 end
 
+function fn.IfFn(value)
+  if type(value) == "function" then
+    value()
+  end
+end
+
 function fn.MakeInventory(inventory, is_master)
   local classified = inventory.classified
 
-  local interface = {
-    Move = function(from, to) end,
-    Equip = function(slot) end,
-    Unequip = function(eslot) end,
-    GetItem = function(slot) end,
-    GetEquippedItem = function(eslot) end,
-    GetResolveBlock = function() end,
-    CanEquip = function(item) end,
-    ResolveBlock = function(item, target_slot) end,
-    GetFreeSlot = function() end
-  }
+  local interface = {}
 
   function interface.GetEquippedItem(eslot)
     return inventory:GetEquippedItem(eslot)
@@ -710,7 +707,13 @@ function fn.MakeInventory(inventory, is_master)
     end
 
     local eslot = fn.GetEquipSlot(item)
-    return not interface.GetEquippedItem(slot)
+    fn.debug("eslot = " .. tostring(eslot))
+
+    local equipped_item = interface.GetEquippedItem(eslot)
+
+    fn.debug("equipped_item = "..tostring(equipped_item and equipped_item.prefab or nil))
+
+    return not equipped_item
   end
 
   function interface.GetFreeSlot()
@@ -724,20 +727,19 @@ function fn.MakeInventory(inventory, is_master)
     -- TODO: Look in backpack
   end
 
-  -- ResolveBlock does not have any interface specific logic,
-  -- but utilities specific interface functions like MoveItem()
-  function interface.ResolveBlock(target_slot, item, whenTrue, whenFalse)
-    fn.debug("ResolveBlock!")
+  function interface.ResolveBlock(target_slot, item, callback)
     local blocking_item = interface.GetItem(target_slot)
-    fn.debug("blocking_item == "..tostring(blocking_item and blocking_item.prefab or nil))
+
+    fn.debug("Resolving block for "..item.prefab)
+    fn.debug("blocking_item = " .. blocking_item.prefab)
 
     if not blocking_item then
-      whenTrue()
+      callback(true)
       return true
     end
 
     if blocking_item == OCCUPIED then
-      whenFalse()
+      callback(false)
       return false
     end
 
@@ -745,7 +747,9 @@ function fn.MakeInventory(inventory, is_master)
     blocking_item_saved_slot = fn.GetSlot(blocking_item.prefab)
 
     if not fn.IsEquipment(blocking_item) or blocking_item_saved_slot ~= target_slot then
-      interface.Move(target_slot, free_slot, whenTrue)
+      interface.Move(target_slot, free_slot, function()
+        callback(true)
+      end)
       return true
     end
 
@@ -760,12 +764,19 @@ function fn.MakeInventory(inventory, is_master)
       fn.GetRemainingUses(item) < fn.GetRemainingUses(blocking_item)
 
     if equip_blocking_item then
-      interface.Equip(blocking_item, whenTrue)
+      fn.debug("equipping")
+      interface.Equip(blocking_item, function()
+        callback(true)
+      end)
     elseif move_blocking_item then
-      interface.Move(target_slot, free_slot, whenTrue)
+      fn.debug("moving")
+      interface.Move(target_slot, free_slot, function()
+        callback(true)
+      end)
     else
+      fn.debug("don't move")
       -- Not resolved
-      whenFalse()
+      callback(false)
       return false
     end
 
@@ -793,35 +804,38 @@ function fn.MakeInventory(inventory, is_master)
     local function ToActiveItem(from, nextFn)
       whenNotBusy(function()
         inventory:TakeActiveItemFromAllOfSlot(from)
-        whenNotBusy(nextFn)
+        fn.IfFn(nextFn)
       end)
     end
 
     local function ActiveItemToSlot(slot, nextFn)
       whenNotBusy(function()
         inventory:PutAllOfActiveItemInSlot(slot)
-        whenNotBusy(nextFn)
+        fn.IfFn(nextFn)
       end)
     end
 
     function interface.Move(from, to, nextFn)
+      fn.debug("Moving from "..from.." to "..to)
+      rearranging = rearranging + 1
       whenNotBusy(function()
-        rearranging = rearranging + 1
         ToActiveItem(from, function()
-          ActiveItemToSlot(to, function()
-            rearranging = rearranging - 1
-            if type(nextFn) == "function" then
-              nextFn()
-            end
+          whenNotBusy(function()
+            ActiveItemToSlot(to, function()
+              rearranging = rearranging - 1
+              fn.IfFn(nextFn)
+            end)
           end)
         end)
       end)
     end
 
     function interface.Equip(item, nextFn)
+      is_equipping = true
       whenNotBusy(function()
         inventory:ControllerUseItemOnSelfFromInvTile(item)
-        nextFn()
+        is_equipping = false
+        fn.IfFn(nextFn)
       end)
     end
   end

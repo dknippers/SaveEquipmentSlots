@@ -481,7 +481,7 @@ function fn.ResolveBlock(inventory, item, saved_slot)
   local blocking_item = inventory:GetItemInSlot(saved_slot)
 
   if blocking_item == OCCUPIED then
-    -- The slot is occupied by us,
+    -- The slot is occupied by us,`
     -- we cannot resolve it.
     return false
   end
@@ -608,26 +608,32 @@ function fn.Inventory_OnItemGet(inst, data)
   local item = data.item
   local slot = data.slot
 
-  if rearranging > 0 or not slot or not fn.IsEquipment(item) then
-    return
-  end
-
-  local inventory = fn.GetComponent(inst, "inventory")
-  if not inventory then
+  if not state.inventory or rearranging > 0 or not slot or not fn.IsEquipment(item) then
     return
   end
 
   local saved_slot = fn.GetSlot(item.prefab)
 
   if saved_slot then
-    local existing_item = inventory:GetItemInSlot(saved_slot)
-    if existing_item and existing_item.prefab == item.prefab then
-      -- If another copy of the same equipment is available in the inventory and
-      -- is in its saved slot, we do NOT save the new slot of this equipment.
-      -- This is to prevent unintentionally changing the saved equipment slot
-      -- when an additional copy of the item is picked up while you already
-      -- have a copy of the item in the previously saved slot.
-      return
+    local existing_item = state.inventory.GetItem(saved_slot)
+    if existing_item then
+      if existing_item.prefab == item.prefab then
+        -- If another copy of the same equipment is available in the inventory and
+        -- is in its saved slot, we do NOT save the new slot of this equipment.
+        -- This is to prevent unintentionally changing the saved equipment slot
+        -- when an additional copy of the item is picked up while you already
+        -- have a copy of the item in the previously saved slot.
+        return
+      elseif not state.is_master and saved_slot ~= slot then
+        fn.debug("resolving")
+        state.inventory.ResolveBlock(saved_slot, item, function()
+          -- saved_slot is now free
+          fn.debug("should be free")
+          state.inventory.Move(slot, saved_slot)
+        end, function()
+          fn.debug("slot " .. saved_slot .. " is still blocked!")
+        end)
+      end
     end
   end
 
@@ -675,25 +681,175 @@ function fn.Inventory_OnSave(original_fn)
   end
 end
 
-function fn.InitInventory(self)
-  state.inventory = self
+function fn.MakeInventory(inventory, is_master)
+  local classified = inventory.classified
 
-  self.inst:ListenForEvent("equip", fn.Inventory_OnEquip)
-  self.inst:ListenForEvent("itemget", fn.Inventory_OnItemGet)
-  self.inst:ListenForEvent("newactiveitem", fn.Inventory_OnNewActiveItem)
+  local interface = {
+    Move = function(from, to) end,
+    Equip = function(slot) end,
+    Unequip = function(eslot) end,
+    GetItem = function(slot) end,
+    GetEquippedItem = function(eslot) end,
+    GetResolveBlock = function() end,
+    CanEquip = function(item) end,
+    ResolveBlock = function(item, target_slot) end,
+    GetFreeSlot = function() end
+  }
+
+  function interface.GetEquippedItem(eslot)
+    return inventory:GetEquippedItem(eslot)
+  end
+
+  function interface.GetItem(slot)
+    return inventory:GetItemInSlot(slot)
+  end
+
+  function interface.CanEquip(item)
+    if not fn.IsEquipment(item) then
+      return false
+    end
+
+    local eslot = fn.GetEquipSlot(item)
+    return not interface.GetEquippedItem(slot)
+  end
+
+  function interface.GetFreeSlot()
+    local num_items = inventory:GetNumSlots()
+    for slot = 1, num_items do
+      if not interface.GetItem(slot) then
+        return slot
+      end
+    end
+
+    -- TODO: Look in backpack
+  end
+
+  -- ResolveBlock does not have any interface specific logic,
+  -- but utilities specific interface functions like MoveItem()
+  function interface.ResolveBlock(target_slot, item, whenTrue, whenFalse)
+    fn.debug("ResolveBlock!")
+    local blocking_item = interface.GetItem(target_slot)
+    fn.debug("blocking_item == "..tostring(blocking_item and blocking_item.prefab or nil))
+
+    if not blocking_item then
+      whenTrue()
+      return true
+    end
+
+    if blocking_item == OCCUPIED then
+      whenFalse()
+      return false
+    end
+
+    local free_slot = interface.GetFreeSlot()
+    blocking_item_saved_slot = fn.GetSlot(blocking_item.prefab)
+
+    if not fn.IsEquipment(blocking_item) or blocking_item_saved_slot ~= target_slot then
+      interface.Move(target_slot, free_slot, whenTrue)
+      return true
+    end
+
+    local equip_blocking_item =
+      config.allow_equip_for_space and
+      interface.CanEquip(blocking_item)
+
+    local move_blocking_item =
+      not equip_blocking_item and
+      not blocking_item.prefab == item.prefab and
+      fn.IsFiniteUses(item) and
+      fn.GetRemainingUses(item) < fn.GetRemainingUses(blocking_item)
+
+    if equip_blocking_item then
+      interface.Equip(blocking_item, whenTrue)
+    elseif move_blocking_item then
+      interface.Move(target_slot, free_slot, whenTrue)
+    else
+      -- Not resolved
+      whenFalse()
+      return false
+    end
+
+    -- Ending up here means the block was resolved
+    return true
+  end
+
+  if is_master then
+    -- TODO
+  else
+    local function IsBusy()
+      return classified and classified._busy
+    end
+
+    local function whenNotBusy(whenFn)
+      if IsBusy() then
+        fn.OnNextCycle(function()
+          whenNotBusy(whenFn)
+        end)
+      else
+        whenFn()
+      end
+    end
+
+    local function ToActiveItem(from, nextFn)
+      whenNotBusy(function()
+        inventory:TakeActiveItemFromAllOfSlot(from)
+        whenNotBusy(nextFn)
+      end)
+    end
+
+    local function ActiveItemToSlot(slot, nextFn)
+      whenNotBusy(function()
+        inventory:PutAllOfActiveItemInSlot(slot)
+        whenNotBusy(nextFn)
+      end)
+    end
+
+    function interface.Move(from, to, nextFn)
+      whenNotBusy(function()
+        rearranging = rearranging + 1
+        ToActiveItem(from, function()
+          ActiveItemToSlot(to, function()
+            rearranging = rearranging - 1
+            if type(nextFn) == "function" then
+              nextFn()
+            end
+          end)
+        end)
+      end)
+    end
+
+    function interface.Equip(item, nextFn)
+      whenNotBusy(function()
+        inventory:ControllerUseItemOnSelfFromInvTile(item)
+        nextFn()
+      end)
+    end
+  end
+
+  return interface
+end
+
+function fn.InitInventory(inventory)
+  state.inventory = fn.MakeInventory(inventory)
+
+  inventory.inst:ListenForEvent("equip", fn.Inventory_OnEquip)
+  inventory.inst:ListenForEvent("itemget", fn.Inventory_OnItemGet)
+  inventory.inst:ListenForEvent("newactiveitem", fn.Inventory_OnNewActiveItem)
 
   if state.is_master then
-    self.GetNextAvailableSlot = fn.Inventory_GetNextAvailableSlot(self.GetNextAvailableSlot)
-    self.Equip = fn.Inventory_Equip(self.Equip)
-    self.OnSave = fn.Inventory_OnSave(self.OnSave)
+    inventory.GetNextAvailableSlot = fn.Inventory_GetNextAvailableSlot(inventory.GetNextAvailableSlot)
+    inventory.Equip = fn.Inventory_Equip(inventory.Equip)
+    inventory.OnSave = fn.Inventory_OnSave(inventory.OnSave)
   end
 end
 
 function fn.InitSaveEquipmentSlots()
+  AddSimPostInit(function()
+    state.is_master = fn.IsMaster()
+  end)
+
   AddPlayerPostInit(function(player)
     fn.OnNextCycle(function()
-      state.is_master = fn.IsMaster()
-
       if player == fn.GetPlayer() then
         -- Only initialize for the current player
         fn.IfHasComponent(player, "inventory", fn.InitInventory)

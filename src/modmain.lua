@@ -67,7 +67,10 @@ local state = {
   },
 
   -- true for all cases except when connected to a remote host in DST
-  is_mastersim = true
+  is_mastersim = true,
+
+  -- cache of required prefabs
+  prefab_cache = {}
 }
 
 -- All functions will be stored in this table,
@@ -130,20 +133,41 @@ function fn.GetPlayerHud()
   return player and player.HUD
 end
 
+function fn.GetPrefabData(prefab)
+  if not state.prefab_cache[prefab] then
+    state.prefab_cache[prefab] = require("prefabs/"..prefab)
+  end
+
+  return state.prefab_cache[prefab]
+end
+
+function fn.FindAtlas(prefab_data)
+  if prefab_data and prefab_data.assets then
+    for i, asset in ipairs(prefab_data.assets) do
+      if asset.type == "ATLAS" then
+        return asset.file
+      end
+    end
+  end
+end
+
+function fn.GetAtlasAndImage(prefab)
+  local prefab_data = fn.GetPrefabData(prefab)
+
+  if prefab_data then
+    local atlas = fn.FindAtlas(prefab_data) or "images/inventoryimages.xml"
+    local image = prefab..".tex"
+
+    return atlas, image
+  end
+end
+
 function fn.CreateImageButton(prefab)
   if not state.hud.inventorybar then
     return
   end
 
-  -- We used to get atlas and image info dynamically (using inventoryitem:GetAtlas() and
-  -- inventoryitem:GetImage(), but in DST we could not easily create an inventoryitem based
-  -- on a prefab on a non-host player, thus atlas is made a constant and image is
-  -- now determined based on prefab alone.
-  -- If this causes issues at some point we can revert the old behavior at least for non-DST,
-  -- but this approach is more efficient anyway so if there are no reports of missing icons this
-  -- will remain, and this comment will be removed at a later point.
-  local atlas = "images/inventoryimages.xml"
-  local image = prefab..".tex"
+  local atlas, image = fn.GetAtlasAndImage(prefab)
 
   local image_button = ImageButton(atlas, image)
 

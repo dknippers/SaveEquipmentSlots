@@ -67,7 +67,10 @@ local state = {
   },
 
   -- true for all cases except when connected to a remote host in DST
-  is_mastersim = true
+  is_mastersim = true,
+
+  -- cache of required prefabs
+  prefab_cache = {}
 }
 
 -- All functions will be stored in this table,
@@ -130,20 +133,41 @@ function fn.GetPlayerHud()
   return player and player.HUD
 end
 
+function fn.GetPrefabData(prefab)
+  if not state.prefab_cache[prefab] then
+    state.prefab_cache[prefab] = require("prefabs/"..prefab)
+  end
+
+  return state.prefab_cache[prefab]
+end
+
+function fn.FindAtlas(prefab_data)
+  if prefab_data and prefab_data.assets then
+    for i, asset in ipairs(prefab_data.assets) do
+      if asset.type == "ATLAS" then
+        return asset.file
+      end
+    end
+  end
+end
+
+function fn.GetAtlasAndImage(prefab)
+  local prefab_data = fn.GetPrefabData(prefab)
+
+  if prefab_data then
+    local atlas = fn.FindAtlas(prefab_data) or "images/inventoryimages.xml"
+    local image = prefab..".tex"
+
+    return atlas, image
+  end
+end
+
 function fn.CreateImageButton(prefab)
   if not state.hud.inventorybar then
     return
   end
 
-  -- We used to get atlas and image info dynamically (using inventoryitem:GetAtlas() and
-  -- inventoryitem:GetImage(), but in DST we could not easily create an inventoryitem based
-  -- on a prefab on a non-host player, thus atlas is made a constant and image is
-  -- now determined based on prefab alone.
-  -- If this causes issues at some point we can revert the old behavior at least for non-DST,
-  -- but this approach is more efficient anyway so if there are no reports of missing icons this
-  -- will remain, and this comment will be removed at a later point.
-  local atlas = "images/inventoryimages.xml"
-  local image = prefab..".tex"
+  local atlas, image = fn.GetAtlasAndImage(prefab)
 
   local image_button = ImageButton(atlas, image)
 
@@ -466,9 +490,9 @@ function fn.Inventory_GetNextAvailableSlot(original_fn)
       return original_fn(self, item)
     end
 
-    local resolved = state.inventory.ResolveBlock(saved_slot, item)
+    local made_space = state.inventory.MakeSpace(saved_slot, item)
 
-    if not resolved then
+    if not made_space then
       if config.reserve_saved_slots then
         return fn.TrySkipSavedSlots(self, item, original_fn)
       else
@@ -546,8 +570,9 @@ function fn.Inventory_OnItemGet(inst, data)
   end
 
   local saved_slot = fn.GetSlot(item.prefab)
-  local item_in_saved_slot = state.inventory.GetItem(saved_slot)
-  local prefab_is_in_saved_slot = item_in_saved_slot and item_in_saved_slot.prefab == item.prefab
+  local blocking_item = state.inventory.GetItem(saved_slot)
+  local prefab_is_in_saved_slot = blocking_item and blocking_item.prefab == item.prefab
+  local was_manually_moved = manually_moved_equipment == item
 
   -- Save equipment slot if the item was either manually moved
   -- or has never been picked up before.
@@ -555,24 +580,23 @@ function fn.Inventory_OnItemGet(inst, data)
   -- the slot was cleared by the user later) the slot it is put in is saved so on
   -- subsequent equip / unequip actions it will already return to that first slot
   -- without the player having to put it there explicitly.
-  local save_slot = not prefab_is_in_saved_slot and (manually_moved_equipment == item or not fn.HasSlot(item.prefab))
+  local save_slot = not prefab_is_in_saved_slot and (was_manually_moved or not fn.HasSlot(item.prefab))
 
   if save_slot then
     fn.SaveSlot(item.prefab, slot)
-  elseif saved_slot and slot ~= saved_slot and not state.is_mastersim then
-    -- DST to remote host: make sure item returns to its slot here
-    local function move()
-      state.inventory.Move(slot, saved_slot)
-    end
-
-    if item_in_saved_slot then
-      state.inventory.ResolveBlock(saved_slot, item, function(resolved)
-        if resolved then
-          move()
-        end
-      end)
+  elseif saved_slot and slot ~= saved_slot and not state.is_mastersim and not was_manually_moved then
+    if not blocking_item then
+      inv.Move(slot, saved_slot)
     else
-      move()
+      local should_move, action = fn.ShouldMove(saved_slot, blocking_item, item)
+      if should_move then
+        if action == "equip" then
+          -- will never occur at this moment,
+          -- as the item is already unequipped
+        else
+          state.inventory.Swap(slot, saved_slot)
+        end
+      end
     end
   end
 end
@@ -616,6 +640,41 @@ function fn.IfFn(value, ...)
   end
 end
 
+-- true if the blocking_item in the slot should be moved
+function fn.ShouldMove(slot, blocking_item, item)
+  if not blocking_item then
+    return false
+  end
+
+  if blocking_item == OCCUPIED then
+    return false
+  end
+
+  local blocking_item_saved_slot = fn.GetSlot(blocking_item.prefab)
+
+  if not fn.IsEquipment(blocking_item) or blocking_item_saved_slot ~= slot then
+    return true, "move"
+  end
+
+  local equip_blocking_item =
+    config.allow_equip_for_space and
+    state.inventory.CanEquip(blocking_item)
+
+  local move_blocking_item =
+    not equip_blocking_item and
+    blocking_item.prefab == item.prefab and
+    fn.IsFiniteUses(item) and
+    fn.GetRemainingUses(item) < fn.GetRemainingUses(blocking_item)
+
+  if equip_blocking_item then
+    return true, "equip"
+  elseif move_blocking_item then
+    return true, "move"
+  else
+    return false
+  end
+end
+
 function fn.MakeInventory(inventory, is_mastersim)
   -- The table representing the inventory interface
   -- we will create based on the given inventory and
@@ -652,58 +711,31 @@ function fn.MakeInventory(inventory, is_mastersim)
     -- TODO: Look in backpack
   end
 
-  function inv.ResolveBlock(target_slot, item, callback)
-    local blocking_item = inv.GetItem(target_slot)
+  if is_mastersim then
+    function inv.MakeSpace(slot, item)
+      local blocking_item = inv.GetItem(slot)
 
-    local function trueCallback() fn.IfFn(callback, true) end
-    local function falseCallback() fn.IfFn(callback, false) end
-    local function variableCallback(success) fn.IfFn(callback, success) end
-
-    if not blocking_item then
-      trueCallback()
-      return true
-    end
-
-    if blocking_item == OCCUPIED then
-      falseCallback()
-      return false
-    end
-
-    local blocking_item_saved_slot = fn.GetSlot(blocking_item.prefab)
-
-    if not fn.IsEquipment(blocking_item) or blocking_item_saved_slot ~= target_slot then
-      inv.Move(target_slot, variableCallback)
-      return true
-    end
-
-    local equip_blocking_item =
-      config.allow_equip_for_space and
-      inv.CanEquip(blocking_item)
-
-    local move_blocking_item =
-      not equip_blocking_item and
-      not blocking_item.prefab == item.prefab and
-      fn.IsFiniteUses(item) and
-      fn.GetRemainingUses(item) < fn.GetRemainingUses(blocking_item)
-
-    if not equip_blocking_item and not move_blocking_item then
-      -- Not resolved
-      falseCallback()
-      return false
-    else
-      if equip_blocking_item then
-        inv.Equip(blocking_item, trueCallback)
-      elseif move_blocking_item then
-        inv.Move(target_slot, variableCallback)
+      if not blocking_item then
+        -- It's already empty
+        return true
       end
 
-      -- It was either equipped or moved
+      local should_move, action = fn.ShouldMove(slot, blocking_item, item)
+
+      if not should_move then
+        return false
+      end
+
+      if action == "equip" then
+        inv.Equip(blocking_item)
+      elseif action == "move" then
+        inv.MoveAway(slot)
+      end
+
       return true
     end
-  end
 
-  if is_mastersim then
-    function inv.Move(from)
+    function inv.MoveAway(from)
       local blocking_item = inventory.itemslots[from]
       if not blocking_item then
         return
@@ -760,8 +792,9 @@ function fn.MakeInventory(inventory, is_mastersim)
       end
     end
 
-    local function ToActiveItem(from, nextFn)
+    local function SlotToActiveItem(from, nextFn)
       whenNotBusy(function()
+        -- TODO: Check if we currently have an active item
         inventory:TakeActiveItemFromAllOfSlot(from)
         fn.IfFn(nextFn)
       end)
@@ -789,31 +822,32 @@ function fn.MakeInventory(inventory, is_mastersim)
       end)
     end
 
-    function inv.Move(from, nextFn)
-      local free_slot = inv.GetFreeSlot(from)
-      if not free_slot then
-        fn.IfFn(nextFn, false)
-        return false
-      end
-
-      rearranging = rearranging + 1
+    local function SwapActiveItemWithSlot(slot, nextFn)
       whenNotBusy(function()
-        ToActiveItem(from, function()
-          whenNotBusy(function()
-            free_slot = inv.GetFreeSlot(from)
-            if not free_slot then
-              rearranging = rearranging - 1
-              ReturnActiveItem(function()
-                fn.IfFn(nextFn, false)
-              end)
-              return false
-            else
-               ActiveItemToSlot(free_slot, function()
-                rearranging = rearranging - 1
-                fn.IfFn(nextFn, true)
-              end)
-            end
+        inventory:SwapActiveItemWithSlot(slot)
+        fn.IfFn(nextFn)
+      end)
+    end
+
+    function inv.Swap(slotA, slotB, nextFn)
+      rearranging = rearranging + 1
+      SlotToActiveItem(slotA, function()
+        SwapActiveItemWithSlot(slotB, function()
+          ActiveItemToSlot(slotA, function()
+            rearranging = rearranging - 1
+            fn.IfFn(nextFn)
           end)
+        end)
+      end)
+    end
+
+    function inv.Move(from, to, nextFn)
+      rearranging = rearranging + 1
+
+      SlotToActiveItem(from, function()
+        ActiveItemToSlot(to, function()
+          rearranging = rearranging - 1
+          fn.IfFn(nextFn)
         end)
       end)
     end

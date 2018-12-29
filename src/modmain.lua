@@ -595,7 +595,7 @@ function fn.Inventory_OnItemGet(inst, data)
     fn.SaveSlot(item.prefab, slot)
   elseif saved_slot and slot ~= saved_slot and not state.is_mastersim and not was_manually_moved then
     if not blocking_item then
-      inv.Move(slot, saved_slot)
+      state.inventory.Move(slot, saved_slot)
     else
       local should_move, action = fn.ShouldMove(saved_slot, blocking_item, item)
       if should_move then

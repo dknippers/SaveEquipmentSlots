@@ -349,6 +349,10 @@ function fn.SaveSlot(prefab, slot)
 end
 
 function fn.ClearSlot(prefab, slot)
+  if not prefab or not slot or not items[slot] then
+    return
+  end
+
   -- Remove from items
   fn.RemoveFromTable(items[slot], function(p) return p == prefab end, true)
 
@@ -536,6 +540,12 @@ function fn.Inventory_OnEquip(inst, data)
     return
   end
 
+  if not state.is_mastersim then
+    fn.IfHasComponent(item, "container", function(container)
+      fn.InitOverflow(container)
+    end)
+  end
+
   -- There is a strange bug in the base
   -- game where equipment that has ever been in
   -- your backpack will go straight back to the backback
@@ -570,6 +580,26 @@ function fn.IsMasterSim()
   end
 end
 
+function fn.DebugPrintTable(tbl, prefix, depth)
+  local depth = depth or 1
+
+  if depth > 4 then
+    -- prevent endless loops on recursive tables
+    return
+  end
+
+  for k,v in pairs(tbl) do
+    local key = (prefix or "")..tostring(k)
+
+    if type(v) == "table" then
+      fn.DebugPrintTable(v, key..".", depth + 1)
+    else
+      print(key.." = "..tostring(v))
+    end
+  end
+end
+
+
 function fn.Inventory_OnItemGet(inst, data)
   local item = data.item
   local slot = data.slot
@@ -593,17 +623,32 @@ function fn.Inventory_OnItemGet(inst, data)
 
   if save_slot then
     fn.SaveSlot(item.prefab, slot)
-  elseif saved_slot and slot ~= saved_slot and not state.is_mastersim and not was_manually_moved then
-    if not blocking_item then
-      state.inventory.Move(slot, saved_slot)
-    else
-      local should_move, action = fn.ShouldMove(saved_slot, blocking_item, item)
-      if should_move then
-        if action == "equip" then
-          -- will never occur at this moment,
-          -- as the item is already unequipped
-        else
-          state.inventory.Swap(slot, saved_slot)
+  elseif not state.is_mastersim then
+    -- DST client mode gets events pushed by both server and client.
+    -- We are only moving an item only when the server raises the event,
+    -- as that is the authority.
+    local is_server_event = data.ignore_stacksize_anim
+
+    -- TODO: Experiment with is_server_event,
+    -- seems too slow so ignore it for now
+
+    if saved_slot and slot ~= saved_slot and not was_manually_moved then
+      -- DST client mode: move item to its saved slot if needed
+      if not blocking_item then
+        state.inventory.Move(slot, saved_slot)
+      else
+        local should_move, action = fn.ShouldMove(saved_slot, blocking_item, item)
+        if should_move then
+          if action == "equip" then
+            -- TODO: Fix better
+            if blocking_item.prefab ~= item.prefab then
+              state.inventory.Equip(blocking_item, function()
+                state.inventory.Move(slot, saved_slot)
+              end)
+            end
+          elseif action == "move" then
+            state.inventory.Swap(slot, saved_slot)
+          end
         end
       end
     end
@@ -684,11 +729,82 @@ function fn.ShouldMove(slot, blocking_item, item)
   end
 end
 
+function fn.MakeContainer(container, is_mastersim)
+  local c = {}
+
+  if not is_mastersim then
+    local function CancelRefreshTask()
+      if container.classified and container.classified._refreshtask then
+        container.classified._refreshtask:Cancel()
+        container.classified._refreshtask = nil
+        container.classified._busy = false
+        return true
+      else
+        return false
+      end
+    end
+
+    function c.IsBusy()
+      return container and container.classified and container.classified.IsBusy and container.classified:IsBusy()
+    end
+
+    function c.WhenNotBusy(whenFn, triedToCancel)
+      if c.IsBusy() then
+        if not triedToCancel and CancelRefreshTask() then
+          triedToCancel = true
+          c.WhenNotBusy(whenFn, triedToCancel)
+        else
+          fn.OnNextCycle(function()
+            c.WhenNotBusy(whenFn, triedToCancel)
+          end)
+        end
+      else
+        whenFn()
+      end
+    end
+
+    function c.SlotToActiveItem(from, nextFn)
+      c.WhenNotBusy(function()
+        -- TODO: Check if we currently have an active item
+        container:TakeActiveItemFromAllOfSlot(from)
+        fn.IfFn(nextFn)
+      end)
+    end
+
+    function c.ActiveItemToSlot(slot, nextFn)
+      c.WhenNotBusy(function()
+        container:PutAllOfActiveItemInSlot(slot)
+        fn.IfFn(nextFn)
+      end)
+    end
+
+    function c.ReturnActiveItem(nextFn)
+      c.WhenNotBusy(function()
+        container:ReturnActiveItem()
+        fn.IfFn(nextFn)
+      end)
+    end
+
+    function c.SwapActiveItemWithSlot(slot, nextFn)
+      c.WhenNotBusy(function()
+        container:SwapActiveItemWithSlot(slot)
+        fn.IfFn(nextFn)
+      end)
+    end
+  end
+
+  return c
+end
+
 function fn.MakeInventory(inventory, is_mastersim)
   -- The table representing the inventory interface
   -- we will create based on the given inventory and
   -- whether or not we are the master simulation
   local inv = {}
+
+  local container = fn.MakeContainer(inventory, is_mastersim)
+
+  GLOBAL.setmetatable(inv, { __index = container })
 
   function inv.GetEquippedItem(eslot)
     return inventory:GetEquippedItem(eslot)
@@ -707,17 +823,6 @@ function fn.MakeInventory(inventory, is_mastersim)
     local equipped_item = inv.GetEquippedItem(eslot)
 
     return not equipped_item
-  end
-
-  function inv.GetFreeSlot(skip)
-    local num_items = inventory:GetNumSlots()
-    for slot = 1, num_items do
-      if slot ~= skip and not inv.GetItem(slot) then
-        return slot
-      end
-    end
-
-    -- TODO: Look in backpack
   end
 
   if is_mastersim then
@@ -775,74 +880,11 @@ function fn.MakeInventory(inventory, is_mastersim)
       inventory:Equip(item)
     end
   else
-    local function CancelRefreshTask()
-      inventory.classified._refreshtask:Cancel()
-      inventory.classified._refreshtask = nil
-      inventory.classified._busy = false
-    end
-
-    local function IsBusy()
-      return inventory.classified and inventory.classified._busy
-    end
-
-    local function whenNotBusy(whenFn, triedToCancel)
-      if IsBusy() then
-        if not triedToCancel and inventory.classified._refreshtask then
-          CancelRefreshTask()
-          -- Try again immediately but when still busy we will wait till the next cycle.
-          whenNotBusy(whenFn, true)
-        else
-          fn.OnNextCycle(function()
-            whenNotBusy(whenFn)
-          end)
-        end
-      else
-        whenFn()
-      end
-    end
-
-    local function SlotToActiveItem(from, nextFn)
-      whenNotBusy(function()
-        -- TODO: Check if we currently have an active item
-        inventory:TakeActiveItemFromAllOfSlot(from)
-        fn.IfFn(nextFn)
-      end)
-    end
-
-    local function ActiveItemToSlot(slot, nextFn)
-      whenNotBusy(function()
-        inventory:PutAllOfActiveItemInSlot(slot)
-        fn.IfFn(nextFn)
-      end)
-    end
-
-    local function ReturnActiveItem(nextFn)
-      whenNotBusy(function()
-        inventory:ReturnActiveItem()
-        fn.IfFn(nextFn)
-      end)
-    end
-
-    local function DropItem(slot, nextFn)
-      whenNotBusy(function()
-        local item = inventory:GetItemInSlot(slot)
-        inventory:DropItemFromInvTile(item)
-        fn.IfFn(nextFn)
-      end)
-    end
-
-    local function SwapActiveItemWithSlot(slot, nextFn)
-      whenNotBusy(function()
-        inventory:SwapActiveItemWithSlot(slot)
-        fn.IfFn(nextFn)
-      end)
-    end
-
     function inv.Swap(slotA, slotB, nextFn)
       rearranging = rearranging + 1
-      SlotToActiveItem(slotA, function()
-        SwapActiveItemWithSlot(slotB, function()
-          ActiveItemToSlot(slotA, function()
+      container.SlotToActiveItem(slotA, function()
+        container.SwapActiveItemWithSlot(slotB, function()
+          container.ActiveItemToSlot(slotA, function()
             rearranging = rearranging - 1
             fn.IfFn(nextFn)
           end)
@@ -853,8 +895,8 @@ function fn.MakeInventory(inventory, is_mastersim)
     function inv.Move(from, to, nextFn)
       rearranging = rearranging + 1
 
-      SlotToActiveItem(from, function()
-        ActiveItemToSlot(to, function()
+      container.SlotToActiveItem(from, function()
+        container.ActiveItemToSlot(to, function()
           rearranging = rearranging - 1
           fn.IfFn(nextFn)
         end)
@@ -863,8 +905,17 @@ function fn.MakeInventory(inventory, is_mastersim)
 
     function inv.Equip(item, nextFn)
       is_equipping = true
-      whenNotBusy(function()
+      container.WhenNotBusy(function()
         inventory:ControllerUseItemOnSelfFromInvTile(item)
+        is_equipping = false
+        fn.IfFn(nextFn)
+      end)
+    end
+
+    function inv.EquipActiveItem(nextFn)
+      is_equipping = true
+      container.WhenNotBusy(function()
+        inventory:EquipActiveItem()
         is_equipping = false
         fn.IfFn(nextFn)
       end)
@@ -872,6 +923,69 @@ function fn.MakeInventory(inventory, is_mastersim)
   end
 
   return inv
+end
+
+function fn.InitOverflow(overflow)
+  if not overflow then
+    return
+  end
+
+  overflow.inst:ListenForEvent("itemget", function(inst, data)
+    local item = data.item
+    local slot = data.slot
+
+    -- TODO: Check if you can merge this logic with Inventory_OnItemGet
+
+    if not item or not fn.IsEquipment(item) or rearranging > 0 then
+      return
+    end
+
+    local saved_slot = fn.GetSlot(item.prefab)
+    if not saved_slot then
+      return
+    end
+
+    local blocking_item = state.inventory.GetItem(saved_slot)
+
+    if manually_moved_equipment == item then
+      if not blocking_item or blocking_item.prefab ~= item.prefab then
+        fn.ClearSlot(item.prefab, saved_slot)
+      end
+    else
+      local container = fn.MakeContainer(overflow)
+
+      if not blocking_item then
+        rearranging = rearranging + 1
+        container.SlotToActiveItem(slot, function()
+          state.inventory.ActiveItemToSlot(saved_slot, function()
+            rearranging = rearranging - 1
+          end)
+        end)
+      else
+        local should_move, action = fn.ShouldMove(saved_slot, blocking_item, item)
+        if should_move then
+          rearranging = rearranging + 1
+          container.SlotToActiveItem(slot, function()
+            state.inventory.SwapActiveItemWithSlot(saved_slot, function()
+              container.WhenNotBusy(function()
+                state.inventory.WhenNotBusy(function()
+                  if action == "equip" then
+                    state.inventory.EquipActiveItem(function()
+                      rearranging = rearranging - 1
+                    end)
+                  elseif action == "move" then
+                    container.ActiveItemToSlot(slot, function()
+                      rearranging = rearranging - 1
+                    end)
+                  end
+                end)
+              end)
+            end)
+          end)
+        end
+      end
+    end
+  end)
 end
 
 function fn.InitInventory(inventory)
@@ -885,6 +999,11 @@ function fn.InitInventory(inventory)
     inventory.GetNextAvailableSlot = fn.Inventory_GetNextAvailableSlot(inventory.GetNextAvailableSlot)
     inventory.Equip = fn.Inventory_Equip(inventory.Equip)
     inventory.OnSave = fn.Inventory_OnSave(inventory.OnSave)
+  else
+    local overflow = inventory:GetOverflowContainer()
+    if overflow then
+      fn.InitOverflow(overflow)
+    end
   end
 end
 
@@ -905,7 +1024,9 @@ function fn.InitSaveEquipmentSlots()
   AddComponentPostInit("inventory", function(self)
     -- AddPlayerPostInit triggers after Inventory.OnLoad
     -- so we use AddComponentPostInit for this specific one
-    self.OnLoad = fn.Inventory_OnLoad(self.OnLoad)
+    if type(self.OnLoad) == "function" then
+      self.OnLoad = fn.Inventory_OnLoad(self.OnLoad)
+    end
   end)
 
   AddClassPostConstruct("widgets/inventorybar", function(inventorybar)

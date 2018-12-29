@@ -135,7 +135,10 @@ end
 
 function fn.GetPrefabData(prefab)
   if not state.prefab_cache[prefab] then
-    state.prefab_cache[prefab] = require("prefabs/"..prefab)
+    GLOBAL.pcall(function()
+      -- this call can fail, pcall will act as a try/catch mechanism
+      state.prefab_cache[prefab] = require("prefabs/"..prefab)
+    end)
   end
 
   return state.prefab_cache[prefab]
@@ -154,12 +157,14 @@ end
 function fn.GetAtlasAndImage(prefab)
   local prefab_data = fn.GetPrefabData(prefab)
 
-  if prefab_data then
-    local atlas = fn.FindAtlas(prefab_data) or "images/inventoryimages.xml"
-    local image = prefab..".tex"
+  local image = prefab..".tex"
+  local atlas
 
-    return atlas, image
+  if prefab_data then
+    atlas = fn.FindAtlas(prefab_data)
   end
+
+  return atlas or "images/inventoryimages.xml", image
 end
 
 function fn.CreateImageButton(prefab)
@@ -168,6 +173,10 @@ function fn.CreateImageButton(prefab)
   end
 
   local atlas, image = fn.GetAtlasAndImage(prefab)
+
+  if not atlas or not image then
+    return
+  end
 
   local image_button = ImageButton(atlas, image)
 

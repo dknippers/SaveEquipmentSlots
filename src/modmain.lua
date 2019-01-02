@@ -644,7 +644,7 @@ function fn.Inventory_OnItemGet(inst, data)
           if action == "equip" then
             -- TODO: Fix better
             if blocking_item.prefab ~= item.prefab then
-              state.inventory.Equip(blocking_item, function()
+              state.inventory.Equip(saved_slot, function()
                 state.inventory.Move(slot, saved_slot)
               end)
             end
@@ -767,7 +767,6 @@ function fn.MakeContainer(container, is_mastersim)
 
     function c.SlotToActiveItem(from, nextFn)
       c.WhenNotBusy(function()
-        -- TODO: Check if we currently have an active item
         container:TakeActiveItemFromAllOfSlot(from)
         fn.IfFn(nextFn)
       end)
@@ -884,9 +883,9 @@ function fn.MakeInventory(inventory, is_mastersim)
   else
     function inv.Swap(slotA, slotB, nextFn)
       rearranging = rearranging + 1
-      container.SlotToActiveItem(slotA, function()
-        container.SwapActiveItemWithSlot(slotB, function()
-          container.ActiveItemToSlot(slotA, function()
+      inv.SlotToActiveItem(slotA, function()
+        inv.SwapActiveItemWithSlot(slotB, function()
+          inv.ActiveItemToSlot(slotA, function()
             rearranging = rearranging - 1
             fn.IfFn(nextFn)
           end)
@@ -897,28 +896,27 @@ function fn.MakeInventory(inventory, is_mastersim)
     function inv.Move(from, to, nextFn)
       rearranging = rearranging + 1
 
-      container.SlotToActiveItem(from, function()
-        container.ActiveItemToSlot(to, function()
+      inv.SlotToActiveItem(from, function()
+        inv.ActiveItemToSlot(to, function()
           rearranging = rearranging - 1
           fn.IfFn(nextFn)
         end)
       end)
     end
 
-    function inv.Equip(item, nextFn)
+    function inv.Equip(slot, nextFn)
       is_equipping = true
-      container.WhenNotBusy(function()
-        inventory:ControllerUseItemOnSelfFromInvTile(item)
-        is_equipping = false
-        fn.IfFn(nextFn)
+      inv.SlotToActiveItem(slot, function()
+        inv.EquipActiveItem(function()
+          is_equipping = false
+          fn.IfFn(nextFn)
+        end)
       end)
     end
 
     function inv.EquipActiveItem(nextFn)
-      is_equipping = true
-      container.WhenNotBusy(function()
+      inv.WhenNotBusy(function()
         inventory:EquipActiveItem()
-        is_equipping = false
         fn.IfFn(nextFn)
       end)
     end

@@ -61,6 +61,7 @@ local rearranging = 0
 -- Table to hold all local state of this mod.
 local state = {
   inventory = nil,
+  overflow = nil,
 
   hud = {
     inventorybar = nil
@@ -540,32 +541,32 @@ function fn.Inventory_OnEquip(inst, data)
     return
   end
 
-  if not state.is_mastersim then
+  if state.is_mastersim then
+    -- There is a strange bug in the base
+    -- game where equipment that has ever been in
+    -- your backpack will go straight back to the backback
+    -- when unequipped, even if you have put it in your regular
+    -- inventory afterwards. This is different from the behavior
+    -- without a backpack, the game will (even without this mod)
+    -- always try to put equipment back where it came from.
+    -- We will fix this here by simply clearing the item's prevcontainer
+    -- whenever it is equipped, which would point to the backpack when it was ever in there.
+    item.prevcontainer = nil
+
+    -- We also clear the item's prevslot to prevent the game from trying
+    -- to put it there when unequipping the item, as this is not always
+    -- what we would want when we have multiple copies of an equipment.
+    -- For example, when we have assigned the Axe to slot 2 but have picked up
+    -- a second copy that is now stored in slot 3, we do not want the game
+    -- to try to put it back directly to slot 3 when unequipping, as slot 2
+    -- might be available at that time. The game bypasses the GetNextAvailableSlot()
+    -- function when prevslot has a value and is available, so we clear it here.
+    item.prevslot = nil
+  else
     fn.IfHasComponent(item, "container", function(container)
-      fn.InitOverflow(container)
+      fn.InitOverflow(inst, container)
     end)
   end
-
-  -- There is a strange bug in the base
-  -- game where equipment that has ever been in
-  -- your backpack will go straight back to the backback
-  -- when unequipped, even if you have put it in your regular
-  -- inventory afterwards. This is different from the behavior
-  -- without a backpack, the game will (even without this mod)
-  -- always try to put equipment back where it came from.
-  -- We will fix this here by simply clearing the item's prevcontainer
-  -- whenever it is equipped, which would point to the backpack when it was ever in there.
-  item.prevcontainer = nil
-
-  -- We also clear the item's prevslot to prevent the game from trying
-  -- to put it there when unequipping the item, as this is not always
-  -- what we would want when we have multiple copies of an equipment.
-  -- For example, when we have assigned the Axe to slot 2 but have picked up
-  -- a second copy that is now stored in slot 3, we do not want the game
-  -- to try to put it back directly to slot 3 when unequipping, as slot 2
-  -- might be available at that time. The game bypasses the GetNextAvailableSlot()
-  -- function when prevslot has a value and is available, so we clear it here.
-  item.prevslot = nil
 end
 
 function fn.IsMasterSim()
@@ -598,7 +599,6 @@ function fn.DebugPrintTable(tbl, prefix, depth)
     end
   end
 end
-
 
 function fn.Inventory_OnItemGet(inst, data)
   local item = data.item
@@ -734,7 +734,9 @@ function fn.MakeContainer(container, is_mastersim)
 
   if not is_mastersim then
     local function CancelRefreshTask()
-      if container.classified and container.classified._refreshtask then
+      if  container.classified and
+          container.classified._refreshtask and
+          type(container.classified._refreshtask.Cancel) == "function" then
         container.classified._refreshtask:Cancel()
         container.classified._refreshtask = nil
         container.classified._busy = false
@@ -748,15 +750,16 @@ function fn.MakeContainer(container, is_mastersim)
       return container and container.classified and container.classified.IsBusy and container.classified:IsBusy()
     end
 
-    function c.WhenNotBusy(whenFn, triedToCancel)
+    function c.WhenNotBusy(whenFn, skipCancel)
       if c.IsBusy() then
-        if not triedToCancel and CancelRefreshTask() then
-          triedToCancel = true
-          c.WhenNotBusy(whenFn, triedToCancel)
+        local function retry()
+          c.WhenNotBusy(whenFn, true)
+        end
+
+        if not skipCancel and CancelRefreshTask() then
+          retry()
         else
-          fn.OnNextCycle(function()
-            c.WhenNotBusy(whenFn, triedToCancel)
-          end)
+          fn.OnNextCycle(retry)
         end
       else
         whenFn()
@@ -923,18 +926,29 @@ function fn.MakeInventory(inventory, is_mastersim)
   return inv
 end
 
-function fn.InitOverflow(overflow)
-  if not overflow then
+function fn.InitOverflow(inventory_inst, overflow)
+  if  not overflow or not overflow.inst or
+      type(overflow.inst.ListenForEvent) ~= "function" then
     return
   end
 
-  overflow.inst:ListenForEvent("itemget", function(inst, data)
+  state.overflow = fn.MakeContainer(overflow)
+
+  local eslot = fn.GetEquipSlot(overflow.inst)
+  local evt = {}
+
+  local function OnItemGet(...) evt.OnItemGet(...) end
+  local function OnUnequip(...) evt.OnUnequip(...) end
+
+  overflow.inst:ListenForEvent("itemget", OnItemGet)
+  inventory_inst:ListenForEvent("unequip", OnUnequip)
+
+  function evt.OnItemGet(inst, data)
     local item = data.item
     local slot = data.slot
 
-    -- TODO: Check if you can merge this logic with Inventory_OnItemGet
-
-    if not item or not fn.IsEquipment(item) or rearranging > 0 then
+    if  not item or not fn.IsEquipment(item) or rearranging > 0 or
+        not state.overflow or not state.inventory then
       return
     end
 
@@ -950,40 +964,52 @@ function fn.InitOverflow(overflow)
         fn.ClearSlot(item.prefab, saved_slot)
       end
     else
-      local container = fn.MakeContainer(overflow)
-
       if not blocking_item then
         rearranging = rearranging + 1
-        container.SlotToActiveItem(slot, function()
-          state.inventory.ActiveItemToSlot(saved_slot, function()
-            rearranging = rearranging - 1
+        state.overflow.SlotToActiveItem(slot, function()
+          state.inventory.WhenNotBusy(function()
+            state.inventory.ActiveItemToSlot(saved_slot, function()
+              rearranging = rearranging - 1
+            end)
           end)
         end)
       else
         local should_move, action = fn.ShouldMove(saved_slot, blocking_item, item)
         if should_move then
           rearranging = rearranging + 1
-          container.SlotToActiveItem(slot, function()
-            state.inventory.SwapActiveItemWithSlot(saved_slot, function()
-              container.WhenNotBusy(function()
-                state.inventory.WhenNotBusy(function()
-                  if action == "equip" then
-                    state.inventory.EquipActiveItem(function()
-                      rearranging = rearranging - 1
-                    end)
-                  elseif action == "move" then
-                    container.ActiveItemToSlot(slot, function()
-                      rearranging = rearranging - 1
-                    end)
-                  end
-                end)
+
+          state.inventory.WhenNotBusy(function()
+            state.overflow.SlotToActiveItem(slot, function()
+              state.inventory.SwapActiveItemWithSlot(saved_slot, function()
+                local function nextFn()
+                  rearranging = rearranging - 1
+                end
+
+                if action == "equip" then
+                  state.inventory.EquipActiveItem(nextFn)
+                elseif action == "move" then
+                  state.inventory.WhenNotBusy(function()
+                    state.overflow.ActiveItemToSlot(slot, nextFn)
+                  end)
+                end
               end)
             end)
           end)
         end
       end
     end
-  end)
+  end
+
+  function evt.OnUnequip(inst, data)
+    if data and data.eslot == eslot then
+      if type(overflow.inst.RemoveEventCallback) == "function" then
+        overflow.inst:RemoveEventCallback("itemget", OnItemGet)
+        state.overflow = nil
+      end
+
+      inventory_inst:RemoveEventCallback("unequip", OnUnequip)
+    end
+  end
 end
 
 function fn.InitInventory(inventory)
@@ -1000,7 +1026,7 @@ function fn.InitInventory(inventory)
   else
     local overflow = inventory:GetOverflowContainer()
     if overflow then
-      fn.InitOverflow(overflow)
+      fn.InitOverflow(inventory.inst, overflow)
     end
   end
 end

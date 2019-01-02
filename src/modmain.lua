@@ -237,19 +237,21 @@ function fn.UpdateImageButtonPosition(image_button, item_index, inventorybar, in
     if invslot_height then
       local _, image_button_height = image_button:GetSize()
 
-      -- Spacing between top of inventory bar and start of image button
-      local spacing = 28
-      image_button:SetPosition(invslot_pos.x, invslot_pos.y + spacing + (invslot_height * 2) + (item_index - 1) * image_button_height)
-      if image_button.o_pos then
-        -- The game itself stores some "original position"
-        -- when a button is focused and updates the button's position
-        -- to that position when the button loses focus.
-        -- However, this does not work properly in some cases when we
-        -- have already shifted the button position, causing the game
-        -- to move the button back to some previous position.
-        -- Thus, we also update this (internal) o_pos value when
-        -- it has a value.
-        image_button.o_pos = image_button:GetLocalPosition()
+      if image_button_height then
+        -- Spacing between top of inventory bar and start of image button
+        local spacing = 28
+        image_button:SetPosition(invslot_pos.x, invslot_pos.y + spacing + (invslot_height * 2) + (item_index - 1) * image_button_height)
+        if image_button.o_pos then
+          -- The game itself stores some "original position"
+          -- when a button is focused and updates the button's position
+          -- to that position when the button loses focus.
+          -- However, this does not work properly in some cases when we
+          -- have already shifted the button position, causing the game
+          -- to move the button back to some previous position.
+          -- Thus, we also update this (internal) o_pos value when
+          -- it has a value.
+          image_button.o_pos = image_button:GetLocalPosition()
+        end
       end
     end
   end
@@ -1031,6 +1033,12 @@ function fn.InitSaveEquipmentSlots()
 
   AddClassPostConstruct("widgets/inventorybar", function(inventorybar)
     state.hud.inventorybar = inventorybar
+
+    -- The image_buttons cache is tied to the inventorybar widget,
+    -- so whenever it's recreated (for example, when using the Celestial Portal)
+    -- this cache should be cleared so new image buttons are created for the
+    -- new inventorybar.
+    image_buttons = {}
   end)
 
   AddClassPostConstruct("widgets/invslot", function(invslot)

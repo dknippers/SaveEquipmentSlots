@@ -169,7 +169,8 @@ function fn.GetAtlasAndImage(prefab)
 end
 
 function fn.CreateImageButton(prefab)
-  if not state.hud.inventorybar then
+  if  not state.hud.inventorybar or
+      not state.hud.inventorybar.toprow then
     return
   end
 
@@ -183,9 +184,31 @@ function fn.CreateImageButton(prefab)
 
   image_button:SetScale(0.9)
 
-  state.hud.inventorybar:AddChild(image_button)
+  image_button.Kill = fn.ImageButton_Kill(image_button.Kill, prefab)
+
+  state.hud.inventorybar.toprow:AddChild(image_button)
 
   return image_button
+end
+
+-- Clears image_buttons cache and refreshes the preview
+-- for the given prefab when the ImageButton is killed
+function fn.ImageButton_Kill(original_fn, prefab)
+  return function(inst)
+    -- Original Kill()
+    original_fn(inst)
+
+    -- Clear cache
+    image_buttons[prefab] = nil
+
+    -- Refresh Preview
+    fn.OnNextCycle(function()
+      local slot = fn.GetSlot(prefab)
+      if slot then
+        fn.UpdatePreviewsForSlot(slot)
+      end
+    end)
+  end
 end
 
 -- Runs the given function on the next processing cycle,
@@ -241,7 +264,7 @@ function fn.UpdateImageButtonPosition(image_button, item_index, inventorybar, in
       if image_button_height then
         -- Spacing between top of inventory bar and start of image button
         local spacing = 28
-        image_button:SetPosition(invslot_pos.x, invslot_pos.y + spacing + (invslot_height * 2) + (item_index - 1) * image_button_height)
+        image_button:SetPosition(invslot_pos.x, invslot_pos.y + invslot_height + spacing + (item_index - 1) * image_button_height)
         if image_button.o_pos then
           -- The game itself stores some "original position"
           -- when a button is focused and updates the button's position

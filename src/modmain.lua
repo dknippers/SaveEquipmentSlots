@@ -24,12 +24,6 @@ local slots = {}
 -- item.prefab -> image button widget of item
 local image_buttons = {}
 
--- The equipment that was just manually moved by the player
--- by dragging it into a new inventory slot. this is used to determine
--- whether an item's slot should be updated when the inventory reports it
--- as a new item.
-local manually_moved_equipment = nil
-
 -- Represents an object used to occupy an inventory slot temporarily
 -- when we are automatically rearranging items
 local OCCUPIED = { components = {} }
@@ -43,12 +37,6 @@ local is_equipping = false
 -- entity to run tasks with, necessary to gain access to DoTaskInTime()
 local tasker = CreateEntity()
 
--- functions to be executed later, in insertion order (DoTaskInTime() does not guarantee the order)
-local fns = {}
-
--- set to true when RunFns() has been scheduled to run using DoTaskInTime()
-local runfns_scheduled = false
-
 -- when unequipping / obtaining a piece of equipment,
 -- we sometimes rearrange other items to put the new item
 -- in its saved slot. when this relocation process is underway
@@ -57,6 +45,8 @@ local runfns_scheduled = false
 -- this is a number as it can be going on for more than 1
 -- item at a time through recursive calls to
 local rearranging = 0
+
+local manually_moved_equipment = {}
 
 -- Table to hold all local state of this mod.
 local state = {
@@ -169,7 +159,8 @@ function fn.GetAtlasAndImage(prefab)
 end
 
 function fn.CreateImageButton(prefab)
-  if not state.hud.inventorybar then
+  if  not state.hud.inventorybar or
+      not state.hud.inventorybar.toprow then
     return
   end
 
@@ -183,9 +174,31 @@ function fn.CreateImageButton(prefab)
 
   image_button:SetScale(0.9)
 
-  state.hud.inventorybar:AddChild(image_button)
+  image_button.Kill = fn.ImageButton_Kill(image_button.Kill, prefab)
+
+  state.hud.inventorybar.toprow:AddChild(image_button)
 
   return image_button
+end
+
+-- Clears image_buttons cache and refreshes the preview
+-- for the given prefab when the ImageButton is killed
+function fn.ImageButton_Kill(original_fn, prefab)
+  return function(self)
+    -- Original Kill()
+    original_fn(self)
+
+    -- Clear cache
+    image_buttons[prefab] = nil
+
+    -- Refresh Preview
+    fn.OnNextCycle(function()
+      local slot = fn.GetSlot(prefab)
+      if slot then
+        fn.UpdatePreviewsForSlot(slot)
+      end
+    end)
+  end
 end
 
 -- Runs the given function on the next processing cycle,
@@ -241,7 +254,7 @@ function fn.UpdateImageButtonPosition(image_button, item_index, inventorybar, in
       if image_button_height then
         -- Spacing between top of inventory bar and start of image button
         local spacing = 28
-        image_button:SetPosition(invslot_pos.x, invslot_pos.y + spacing + (invslot_height * 2) + (item_index - 1) * image_button_height)
+        image_button:SetPosition(invslot_pos.x, invslot_pos.y + invslot_height + spacing + (item_index - 1) * image_button_height)
         if image_button.o_pos then
           -- The game itself stores some "original position"
           -- when a button is focused and updates the button's position
@@ -255,6 +268,12 @@ function fn.UpdateImageButtonPosition(image_button, item_index, inventorybar, in
         end
       end
     end
+  end
+end
+
+function fn.RefreshImageButtons()
+  for _, btn in pairs(image_buttons) do
+    btn:Kill()
   end
 end
 
@@ -275,6 +294,12 @@ function fn.RemoveFromTable(tbl, fn, one)
         if one then return end
       end
     end
+  end
+end
+
+function fn.ClearTable(tbl)
+  for k, _ in pairs(tbl) do
+    tbl[k] = nil
   end
 end
 
@@ -385,44 +410,6 @@ end
 -- Specifies if item is equipment
 function fn.IsEquipment(item)
   return fn.IfHasComponent(item, "equippable", true, false)
-end
-
--- Runs all functions in the fns table and removes them after
-function fn.RunFns()
-  local len = #fns
-
-  -- Run
-  for _, func in ipairs(fns) do
-    func()
-  end
-
-  -- Clear
-  for i = len, 1, -1 do
-    table.remove(fns, i)
-  end
-end
-
--- Queues the specified function to be run on the next processing cycle
-function fn.QueueFunc(func)
-  table.insert(fns, func)
-
-  if not runfns_scheduled then
-    runfns_scheduled = true
-    fn.OnNextCycle(function()
-      fn.RunFns()
-      runfns_scheduled = false
-    end)
-  end
-end
-
-function fn.HandleNewActiveItem(new_item)
-  if fn.IsEquipment(new_item) then
-    manually_moved_equipment = new_item
-  else
-    if manually_moved_equipment then
-      manually_moved_equipment = nil
-    end
-  end
 end
 
 function fn.CanEquip(item, inventory)
@@ -606,35 +593,22 @@ function fn.Inventory_OnItemGet(inst, data)
   local item = data.item
   local slot = data.slot
 
-  if not state.inventory or rearranging > 0 or not slot or not fn.IsEquipment(item) then
+  if  not state.inventory or rearranging > 0 or
+      not slot or not fn.IsEquipment(item) then
     return
   end
 
   local saved_slot = fn.GetSlot(item.prefab)
-  local blocking_item = state.inventory.GetItem(saved_slot)
+  local blocking_item = saved_slot and state.inventory.GetItem(saved_slot)
   local prefab_is_in_saved_slot = blocking_item and blocking_item.prefab == item.prefab
-  local was_manually_moved = manually_moved_equipment == item
+  local was_manually_moved = manually_moved_equipment[item.GUID]
 
-  -- Save equipment slot if the item was either manually moved
-  -- or has never been picked up before.
-  -- The latter case makes sure the very first time an item is picked up (or when
-  -- the slot was cleared by the user later) the slot it is put in is saved so on
-  -- subsequent equip / unequip actions it will already return to that first slot
-  -- without the player having to put it there explicitly.
-  local save_slot = not prefab_is_in_saved_slot and (was_manually_moved or not fn.HasSlot(item.prefab))
+  local should_save_slot = not prefab_is_in_saved_slot and (was_manually_moved or not fn.HasSlot(item.prefab))
 
-  if save_slot then
+  if should_save_slot then
     fn.SaveSlot(item.prefab, slot)
   elseif not state.is_mastersim then
-    -- DST client mode gets events pushed by both server and client.
-    -- We are only moving an item only when the server raises the event,
-    -- as that is the authority.
-    local is_server_event = data.ignore_stacksize_anim
-
-    -- TODO: Experiment with is_server_event,
-    -- seems too slow so ignore it for now
-
-    if saved_slot and slot ~= saved_slot and not was_manually_moved then
+    if not was_manually_moved and saved_slot and slot ~= saved_slot then
       -- DST client mode: move item to its saved slot if needed
       if not blocking_item then
         state.inventory.Move(slot, saved_slot)
@@ -655,20 +629,6 @@ function fn.Inventory_OnItemGet(inst, data)
       end
     end
   end
-end
-
-function fn.Inventory_OnNewActiveItem(inst, data)
-  local item = data.item
-
-  -- Logic itself is queued until all actions are resolved,
-  -- this is necessary as the active item is first removed before
-  -- it's being put in the inventory, and we do not want to clear the manually moved equipment
-  -- before that has happened as we use its value there.
-  -- QueueFunc will guarantee the queued functions are executed in order
-  -- as opposed to DoTaskInTime.
-  fn.QueueFunc(function()
-    fn.HandleNewActiveItem(item)
-  end)
 end
 
 function fn.Inventory_OnLoad(original_fn)
@@ -696,7 +656,7 @@ function fn.IfFn(value, ...)
   end
 end
 
--- true if the blocking_item in the slot should be moved
+-- true if the blocking_item in the slot should be moved to make space for item
 function fn.ShouldMove(slot, blocking_item, item)
   if not blocking_item then
     return false
@@ -961,7 +921,7 @@ function fn.InitOverflow(inventory_inst, overflow)
 
     local blocking_item = state.inventory.GetItem(saved_slot)
 
-    if manually_moved_equipment == item then
+    if manually_moved_equipment[item.GUID] then
       if not blocking_item or blocking_item.prefab ~= item.prefab then
         fn.ClearSlot(item.prefab, saved_slot)
       end
@@ -1014,6 +974,41 @@ function fn.InitOverflow(inventory_inst, overflow)
   end
 end
 
+function fn.Inventory_OnNewActiveItem(inst, data)
+  if rearranging > 0 then
+    return
+  end
+
+  local item = data.item
+
+  if item == nil then
+    manually_moved_equipment.dirty = false
+    fn.OnNextCycle(function()
+      if not manually_moved_equipment.dirty then
+        fn.ClearTable(manually_moved_equipment)
+      end
+    end)
+  elseif fn.IsEquipment(item) then
+    manually_moved_equipment[item.GUID] = true
+    manually_moved_equipment.dirty = true
+  end
+end
+
+function fn.Inventorybar_Rebuild(original_fn)
+  return function(self)
+    original_fn(self)
+    fn.OnNextCycle(fn.RefreshImageButtons)
+  end
+end
+
+function fn.InitInventorybar(inventorybar)
+  state.hud.inventorybar = inventorybar
+
+  if type(inventorybar.Rebuild) == "function" then
+    inventorybar.Rebuild = fn.Inventorybar_Rebuild(inventorybar.Rebuild)
+  end
+end
+
 function fn.InitInventory(inventory)
   state.inventory = fn.MakeInventory(inventory, state.is_mastersim)
 
@@ -1047,23 +1042,15 @@ function fn.InitSaveEquipmentSlots()
     end)
   end)
 
-  AddComponentPostInit("inventory", function(self)
+  AddComponentPostInit("inventory", function(inventory)
     -- AddPlayerPostInit triggers after Inventory.OnLoad
     -- so we use AddComponentPostInit for this specific one
-    if type(self.OnLoad) == "function" then
-      self.OnLoad = fn.Inventory_OnLoad(self.OnLoad)
+    if type(inventory.OnLoad) == "function" then
+      inventory.OnLoad = fn.Inventory_OnLoad(inventory.OnLoad)
     end
   end)
 
-  AddClassPostConstruct("widgets/inventorybar", function(inventorybar)
-    state.hud.inventorybar = inventorybar
-
-    -- The image_buttons cache is tied to the inventorybar widget,
-    -- so whenever it's recreated (for example, when using the Celestial Portal)
-    -- this cache should be cleared so new image buttons are created for the
-    -- new inventorybar.
-    image_buttons = {}
-  end)
+  AddClassPostConstruct("widgets/inventorybar", fn.InitInventorybar)
 
   AddClassPostConstruct("widgets/invslot", function(invslot)
     fn.OnNextCycle(function()

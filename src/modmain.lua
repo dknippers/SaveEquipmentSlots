@@ -184,9 +184,9 @@ end
 -- Clears image_buttons cache and refreshes the preview
 -- for the given prefab when the ImageButton is killed
 function fn.ImageButton_Kill(original_fn, prefab)
-  return function(inst)
+  return function(self)
     -- Original Kill()
-    original_fn(inst)
+    original_fn(self)
 
     -- Clear cache
     image_buttons[prefab] = nil
@@ -268,6 +268,12 @@ function fn.UpdateImageButtonPosition(image_button, item_index, inventorybar, in
         end
       end
     end
+  end
+end
+
+function fn.RefreshImageButtons()
+  for _, btn in pairs(image_buttons) do
+    btn:Kill()
   end
 end
 
@@ -988,6 +994,21 @@ function fn.Inventory_OnNewActiveItem(inst, data)
   end
 end
 
+function fn.Inventorybar_Rebuild(original_fn)
+  return function(self)
+    original_fn(self)
+    fn.OnNextCycle(fn.RefreshImageButtons)
+  end
+end
+
+function fn.InitInventorybar(inventorybar)
+  state.hud.inventorybar = inventorybar
+
+  if type(inventorybar.Rebuild) == "function" then
+    inventorybar.Rebuild = fn.Inventorybar_Rebuild(inventorybar.Rebuild)
+  end
+end
+
 function fn.InitInventory(inventory)
   state.inventory = fn.MakeInventory(inventory, state.is_mastersim)
 
@@ -1021,23 +1042,15 @@ function fn.InitSaveEquipmentSlots()
     end)
   end)
 
-  AddComponentPostInit("inventory", function(self)
+  AddComponentPostInit("inventory", function(inventory)
     -- AddPlayerPostInit triggers after Inventory.OnLoad
     -- so we use AddComponentPostInit for this specific one
-    if type(self.OnLoad) == "function" then
-      self.OnLoad = fn.Inventory_OnLoad(self.OnLoad)
+    if type(inventory.OnLoad) == "function" then
+      inventory.OnLoad = fn.Inventory_OnLoad(inventory.OnLoad)
     end
   end)
 
-  AddClassPostConstruct("widgets/inventorybar", function(inventorybar)
-    state.hud.inventorybar = inventorybar
-
-    -- The image_buttons cache is tied to the inventorybar widget,
-    -- so whenever it's recreated (for example, when using the Celestial Portal)
-    -- this cache should be cleared so new image buttons are created for the
-    -- new inventorybar.
-    image_buttons = {}
-  end)
+  AddClassPostConstruct("widgets/inventorybar", fn.InitInventorybar)
 
   AddClassPostConstruct("widgets/invslot", function(invslot)
     fn.OnNextCycle(function()

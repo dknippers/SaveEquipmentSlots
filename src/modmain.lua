@@ -598,37 +598,65 @@ function fn.Inventory_OnItemGet(inst, data)
     return
   end
 
-  local saved_slot = fn.GetSlot(item.prefab)
-  local blocking_item = saved_slot and state.inventory.GetItem(saved_slot)
+  local saved_slot, blocking_item, was_manually_moved = fn.GetItemMeta(item)
   local prefab_is_in_saved_slot = blocking_item and blocking_item.prefab == item.prefab
-  local was_manually_moved = manually_moved_equipment[item.GUID]
 
   local should_save_slot = not prefab_is_in_saved_slot and (was_manually_moved or not fn.HasSlot(item.prefab))
 
   if should_save_slot then
     fn.SaveSlot(item.prefab, slot)
   elseif not state.is_mastersim then
-    if not was_manually_moved and saved_slot and slot ~= saved_slot then
-      -- DST client mode: move item to its saved slot if needed
-      if not blocking_item then
-        state.inventory.Move(slot, saved_slot)
-      else
-        local should_move, action = fn.ShouldMove(saved_slot, blocking_item, item)
-        if should_move then
-          if action == "equip" then
-            -- TODO: Fix better
-            if blocking_item.prefab ~= item.prefab then
-              state.inventory.Equip(saved_slot, function()
-                state.inventory.Move(slot, saved_slot)
-              end)
-            end
-          elseif action == "move" then
-            state.inventory.Swap(slot, saved_slot)
-          end
+    -- DST client mode: move item to its saved slot if needed
+    fn.TryMoveToSavedSlot(item, state.inventory, slot)
+  end
+end
+
+function fn.GetItemMeta(item)
+  local saved_slot = fn.GetSlot(item.prefab)
+  local blocking_item = saved_slot and state.inventory.GetItem(saved_slot)
+  local was_manually_moved = not not manually_moved_equipment[item.GUID]
+
+  return saved_slot, blocking_item, was_manually_moved
+end
+
+function fn.TryMoveToSavedSlot(item, container, slot)
+  if  not state.inventory or rearranging > 0 or not slot or
+      not container or not fn.IsEquipment(item) then
+    return
+  end
+
+  local saved_slot, blocking_item, was_manually_moved = fn.GetItemMeta(item)
+  local is_correct_slot = not saved_slot or (container == state.inventory and saved_slot == slot)
+
+  if was_manually_moved or is_correct_slot then
+    -- Item will not be moved
+    return false
+  end
+
+  local function move()
+    container.MoveToInventory(slot, state.inventory, saved_slot)
+  end
+
+  if not blocking_item then
+    move()
+    return true
+  else
+    local should_move, action = fn.ShouldMove(saved_slot, blocking_item, item)
+    if should_move then
+      if action == "equip" then
+        -- TODO: Fix better
+        if blocking_item.prefab ~= item.prefab then
+          state.inventory.Equip(saved_slot, move)
+          return true
         end
+      elseif action == "move" then
+        container.SwapWithInventory(slot, state.inventory, saved_slot)
+        return true
       end
     end
   end
+
+  return false
 end
 
 function fn.Inventory_OnLoad(original_fn)
@@ -755,6 +783,35 @@ function fn.MakeContainer(container, is_mastersim)
         fn.IfFn(nextFn)
       end)
     end
+
+    function c.SwapWithInventory(from, inventory, to, nextFn)
+      rearranging = rearranging + 1
+      inventory.WhenNotBusy(function()
+        c.SlotToActiveItem(from, function()
+          inventory.SwapActiveItemWithSlot(to, function()
+            inventory.WhenNotBusy(function()
+              c.ActiveItemToSlot(from, function()
+                rearranging = rearranging - 1
+                fn.IfFn(nextFn)
+              end)
+            end)
+          end)
+        end)
+      end)
+    end
+
+    function c.MoveToInventory(from, inventory, to, nextFn)
+      rearranging = rearranging + 1
+
+      inventory.WhenNotBusy(function()
+        c.SlotToActiveItem(from, function()
+          inventory.ActiveItemToSlot(to, function()
+            rearranging = rearranging - 1
+            fn.IfFn(nextFn)
+          end)
+        end)
+      end)
+    end
   end
 
   return c
@@ -844,29 +901,6 @@ function fn.MakeInventory(inventory, is_mastersim)
       inventory:Equip(item)
     end
   else
-    function inv.Swap(slotA, slotB, nextFn)
-      rearranging = rearranging + 1
-      inv.SlotToActiveItem(slotA, function()
-        inv.SwapActiveItemWithSlot(slotB, function()
-          inv.ActiveItemToSlot(slotA, function()
-            rearranging = rearranging - 1
-            fn.IfFn(nextFn)
-          end)
-        end)
-      end)
-    end
-
-    function inv.Move(from, to, nextFn)
-      rearranging = rearranging + 1
-
-      inv.SlotToActiveItem(from, function()
-        inv.ActiveItemToSlot(to, function()
-          rearranging = rearranging - 1
-          fn.IfFn(nextFn)
-        end)
-      end)
-    end
-
     function inv.Equip(slot, nextFn)
       is_equipping = true
       inv.SlotToActiveItem(slot, function()
@@ -914,52 +948,7 @@ function fn.InitOverflow(inventory_inst, overflow)
       return
     end
 
-    local saved_slot = fn.GetSlot(item.prefab)
-    if not saved_slot then
-      return
-    end
-
-    local blocking_item = state.inventory.GetItem(saved_slot)
-
-    if manually_moved_equipment[item.GUID] then
-      if not blocking_item or blocking_item.prefab ~= item.prefab then
-        fn.ClearSlot(item.prefab, saved_slot)
-      end
-    else
-      if not blocking_item then
-        rearranging = rearranging + 1
-        state.overflow.SlotToActiveItem(slot, function()
-          state.inventory.WhenNotBusy(function()
-            state.inventory.ActiveItemToSlot(saved_slot, function()
-              rearranging = rearranging - 1
-            end)
-          end)
-        end)
-      else
-        local should_move, action = fn.ShouldMove(saved_slot, blocking_item, item)
-        if should_move then
-          rearranging = rearranging + 1
-
-          state.inventory.WhenNotBusy(function()
-            state.overflow.SlotToActiveItem(slot, function()
-              state.inventory.SwapActiveItemWithSlot(saved_slot, function()
-                local function nextFn()
-                  rearranging = rearranging - 1
-                end
-
-                if action == "equip" then
-                  state.inventory.EquipActiveItem(nextFn)
-                elseif action == "move" then
-                  state.inventory.WhenNotBusy(function()
-                    state.overflow.ActiveItemToSlot(slot, nextFn)
-                  end)
-                end
-              end)
-            end)
-          end)
-        end
-      end
-    end
+    fn.TryMoveToSavedSlot(item, state.overflow, slot)
   end
 
   function evt.OnUnequip(inst, data)

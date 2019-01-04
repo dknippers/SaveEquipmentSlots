@@ -25,7 +25,7 @@ local slots = {}
 local image_buttons = {}
 
 -- Represents an object used to occupy an inventory slot temporarily
--- when we are automatically rearranging items
+-- when we are moving items around
 local OCCUPIED = { components = {} }
 -- Another object we use to block an inventory slot, this one is used to reserve
 -- saved slots when looking for an empty inventory slot for a new item
@@ -37,21 +37,19 @@ local is_equipping = false
 -- entity to run tasks with, necessary to gain access to DoTaskInTime()
 local tasker = CreateEntity()
 
--- when unequipping / obtaining a piece of equipment,
--- we sometimes rearrange other items to put the new item
--- in its saved slot. when this relocation process is underway
--- (i.e., rearranging > 0), we will not be changing any of
--- the saved slots, as the player is not manually moving anything.
--- this is a number as it can be going on for more than 1
--- item at a time through recursive calls to
-local rearranging = 0
-
+-- Keeps track of equipment that is being manually moved,
+-- in which case the saved slots might have to be updated.
 local manually_moved_equipment = {}
 
 -- Table to hold all local state of this mod.
 local state = {
   inventory = nil,
   overflow = nil,
+
+  -- When > 0, signals that this mod is moving items around.
+  -- Controlled with fn.Lock() / fn.Unlock() and can be read with fn.IsLocked()
+  -- Used to prevent updating saved slots during this time when items arrive in new slots.
+  locks = 0,
 
   hud = {
     inventorybar = nil
@@ -74,6 +72,18 @@ local state = {
 -- are declared before X is declared.
 -- When storing them all in a table, this limitation is removed.
 local fn = {}
+
+function fn.Lock()
+  state.locks = state.locks + 1
+end
+
+function fn.Unlock()
+  state.locks = state.locks - 1
+end
+
+function fn.IsLocked()
+  return state.locks > 0
+end
 
 function fn.GetPlayer()
   if is_dst then
@@ -307,7 +317,7 @@ function fn.ClearTable(tbl)
   end
 end
 
-function fn.callOrValue(v, ...)
+function fn.CallOrValue(v, ...)
   return type(v) == "function" and v(...) or v
 end
 
@@ -328,7 +338,7 @@ function fn.IfHasComponent(o, component_name, ifFn, ifNot)
   if component then
     return type(ifFn) == "function" and ifFn(component) or component
   else
-    return fn.callOrValue(ifNot)
+    return fn.CallOrValue(ifNot)
   end
 end
 
@@ -414,21 +424,6 @@ end
 -- Specifies if item is equipment
 function fn.IsEquipment(item)
   return fn.IfHasComponent(item, "equippable", true, false)
-end
-
-function fn.CanEquip(item, inventory)
-  if is_equipping then
-    -- We are currently in the process of equipping something else,
-    -- we cannot equip any item now
-    return false
-  end
-
-  local equipslot = fn.GetEquipSlot(item)
-  if equipslot then
-    return inventory.equipslots[equipslot] == nil
-  else
-    return false
-  end
 end
 
 function fn.GetEquipSlot(item)
@@ -597,7 +592,7 @@ function fn.Inventory_OnItemGet(inst, data)
   local item = data.item
   local slot = data.slot
 
-  if  not state.inventory or rearranging > 0 or
+  if  not state.inventory or fn.IsLocked() or
       not slot or not fn.IsEquipment(item) then
     return
   end
@@ -619,8 +614,6 @@ function fn.Inventory_OnItemGet(inst, data)
   end
 end
 
--- Returns true when the client version of the given itemget
--- event data was already processed.
 function fn.IsDuplicateItemGetEvent(data)
   if not data or not data.item or not data.item.GUID then
     return false
@@ -650,7 +643,7 @@ function fn.GetItemMeta(item)
 end
 
 function fn.TryMoveToSavedSlot(item, container, slot)
-  if  not state.inventory or rearranging > 0 or not slot or
+  if  not state.inventory or fn.IsLocked() or not slot or
       not container or not fn.IsEquipment(item) then
     return
   end
@@ -812,13 +805,13 @@ function fn.MakeContainer(container, is_mastersim)
     end
 
     function c.SwapWithInventory(from, inventory, to, nextFn)
-      rearranging = rearranging + 1
+      fn.Lock()
       inventory.WhenNotBusy(function()
         c.SlotToActiveItem(from, function()
           inventory.SwapActiveItemWithSlot(to, function()
             inventory.WhenNotBusy(function()
               c.ActiveItemToSlot(from, function()
-                rearranging = rearranging - 1
+                fn.Unlock()
                 fn.IfFn(nextFn)
               end)
             end)
@@ -828,12 +821,12 @@ function fn.MakeContainer(container, is_mastersim)
     end
 
     function c.MoveToInventory(from, inventory, to, nextFn)
-      rearranging = rearranging + 1
+      fn.Lock()
 
       inventory.WhenNotBusy(function()
         c.SlotToActiveItem(from, function()
           inventory.ActiveItemToSlot(to, function()
-            rearranging = rearranging - 1
+            fn.Unlock()
             fn.IfFn(nextFn)
           end)
         end)
@@ -911,13 +904,13 @@ function fn.MakeInventory(inventory, is_mastersim)
       -- move the this item again or equip it.
       inventory.itemslots[from] = OCCUPIED
 
-      -- Record the fact we are automatically rearranging items
-      rearranging = rearranging + 1
+      -- Record the fact we are automatically moving items
+      fn.Lock()
 
       -- Find a new slot for the blocking item -- skipping the sound
       inventory:GiveItem(blocking_item, nil, nil, true)
 
-      rearranging = rearranging - 1
+      fn.Unlock()
 
       -- The saved_slot is cleared as we have made space by moving away blocking_item.
       -- The game will be putting item in there at a slightly later time
@@ -930,9 +923,11 @@ function fn.MakeInventory(inventory, is_mastersim)
   else
     function inv.Equip(slot, nextFn)
       is_equipping = true
+      fn.Lock()
       inv.SlotToActiveItem(slot, function()
         inv.EquipActiveItem(function()
           is_equipping = false
+          fn.Unlock()
           fn.IfFn(nextFn)
         end)
       end)
@@ -970,7 +965,7 @@ function fn.InitOverflow(inventory_inst, overflow)
     local item = data.item
     local slot = data.slot
 
-    if  not item or not fn.IsEquipment(item) or rearranging > 0 or
+    if  not item or not fn.IsEquipment(item) or fn.IsLocked() or
         not state.overflow or not state.inventory then
       return
     end
@@ -995,7 +990,7 @@ function fn.InitOverflow(inventory_inst, overflow)
 end
 
 function fn.Inventory_OnNewActiveItem(inst, data)
-  if rearranging > 0 then
+  if fn.IsLocked() then
     return
   end
 

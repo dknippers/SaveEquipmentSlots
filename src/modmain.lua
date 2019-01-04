@@ -61,7 +61,11 @@ local state = {
   is_mastersim = true,
 
   -- cache of required prefabs
-  prefab_cache = {}
+  prefab_cache = {},
+
+  -- DST Client Mode: GUIDs of items that have already been processed
+  -- when their clientside "itemget" event was raised.
+  client_processed = {}
 }
 
 -- All functions will be stored in this table,
@@ -598,6 +602,10 @@ function fn.Inventory_OnItemGet(inst, data)
     return
   end
 
+  if not state.is_mastersim and fn.IsDuplicateItemGetEvent(data) then
+    return
+  end
+
   local saved_slot, blocking_item, was_manually_moved = fn.GetItemMeta(item)
   local prefab_is_in_saved_slot = blocking_item and blocking_item.prefab == item.prefab
 
@@ -609,6 +617,28 @@ function fn.Inventory_OnItemGet(inst, data)
     -- DST client mode: move item to its saved slot if needed
     fn.TryMoveToSavedSlot(item, state.inventory, slot)
   end
+end
+
+-- Returns true when the client version of the given itemget
+-- event data was already processed.
+function fn.IsDuplicateItemGetEvent(data)
+  if not data or not data.item or not data.item.GUID then
+    return false
+  end
+
+  local item = data.item
+  local is_server_event = not not data.ignore_stacksize_anim
+
+  if is_server_event then
+    if state.client_processed[item.GUID] then
+      state.client_processed[item.GUID] = nil
+      return true
+    end
+  else
+    state.client_processed[item.GUID] = true
+  end
+
+  return false
 end
 
 function fn.GetItemMeta(item)
@@ -644,11 +674,8 @@ function fn.TryMoveToSavedSlot(item, container, slot)
     local should_move, action = fn.ShouldMove(saved_slot, blocking_item, item)
     if should_move then
       if action == "equip" then
-        -- TODO: Fix better
-        if blocking_item.prefab ~= item.prefab then
-          state.inventory.Equip(saved_slot, move)
-          return true
-        end
+        state.inventory.Equip(saved_slot, move)
+        return true
       elseif action == "move" then
         container.SwapWithInventory(slot, state.inventory, saved_slot)
         return true
@@ -945,6 +972,10 @@ function fn.InitOverflow(inventory_inst, overflow)
 
     if  not item or not fn.IsEquipment(item) or rearranging > 0 or
         not state.overflow or not state.inventory then
+      return
+    end
+
+    if not state.is_mastersim and fn.IsDuplicateItemGetEvent(data) then
       return
     end
 

@@ -64,7 +64,16 @@ local state = {
 
   -- DST Client Mode: GUIDs of items that have already been processed
   -- when their clientside "itemget" event was raised.
-  client_processed = {}
+  client_processed = {},
+
+  -- ClientMode only -- durability per item as it is only communicated through the "percentusedchange" event
+  -- and not accessible anymore through a finiteuses component which is only available to the mastersim
+  durability = {
+    -- Durability per item, key is item.GUID
+    items = {},
+    -- Listener functions per item, key is item.GUID
+    listeners = {}
+  }
 }
 
 -- All functions will be stored in this table,
@@ -347,18 +356,21 @@ function fn.IfHasComponent(o, component_name, ifFn, ifNot)
   end
 end
 
-function fn.WhenFiniteUses(item, when, whenNot)
-  return fn.IfHasComponent(item, "finiteuses", when, whenNot)
-end
+function fn.GetDurability(item)
+  local percent
 
-function fn.GetRemainingUses(item)
-  return fn.WhenFiniteUses(item, function(fu)
-    -- Never return nil, if .current is nil we return 0 instead.
-    return fu.current or 0
-  end,
-  -- When the item does not have a finiteuses component
-  -- we treat it as never used, i.e. 100.
-  100)
+  if state.is_mastersim then
+    percent = fn.IfHasComponent("finiteuses", function(fu)
+      return fu:GetPercent()
+    end)
+  else
+    local key = item and item.GUID
+    percent = key and state.durability.items[key]
+  end
+
+  -- Never return nil, if no percentage is available we treat it as
+  -- an item with infinite durability (e.g., Lucy)
+  return percent or 1
 end
 
 function fn.IsFiniteUses(item)
@@ -559,6 +571,7 @@ function fn.Player_OnEquip(inst, data)
     -- Client Mode: If we just equipped a container component this is some kind of backpack
     -- so we initialize the proper logic to handle it
     fn.IfHasComponent(item, "container", fn.InitOverflow)
+    fn.ListenForDurabilityChanges(item)
   end
 end
 
@@ -598,6 +611,49 @@ function fn.DumpTable(tbl, levels, prefix)
   end
 end
 
+function fn.ListenForAllDurabilityChanges(items)
+  if type(items) ~= "table" then
+    return
+  end
+
+  for _, item in ipairs(items) do
+    fn.ListenForDurabilityChanges(item)
+  end
+end
+
+function fn.ListenForDurabilityChanges(item)
+  local key = item and item.GUID
+  if not key then
+    return
+  end
+
+  if state.durability.listeners[key] ~= nil then
+    -- Already listening
+    return
+  end
+
+  if not fn.IsEquipment(item) then
+    return
+  end
+
+  local function listener(inst, data)
+    if data and data.percent then
+      state.durability.items[key] = data.percent
+    end
+  end
+
+  item:ListenForEvent("percentusedchange", listener)
+  state.durability.listeners[key] = listener
+
+  -- Stop listening and clean up when item is destroyed
+  item:ListenForEvent("onremove", function()
+    item:RemoveEventCallback("percentusedchange", listener)
+
+    state.durability.listeners[key] = nil
+    state.durability.items[key] = nil
+  end)
+end
+
 function fn.Player_OnItemGet(inst, data)
   local item = data.item
   local slot = data.slot
@@ -607,8 +663,12 @@ function fn.Player_OnItemGet(inst, data)
     return
   end
 
-  if not state.is_mastersim and fn.IsDuplicateItemGetEvent(data) then
-    return
+  if not state.is_mastersim then
+    if fn.IsDuplicateItemGetEvent(data) then
+      return
+    end
+
+    fn.ListenForDurabilityChanges(item)
   end
 
   local saved_slot, blocking_item, was_manually_moved = fn.GetItemMeta(item)
@@ -751,8 +811,7 @@ function fn.ShouldMove(slot, blocking_item, item)
   local move_blocking_item =
     not equip_blocking_item and
     blocking_item.prefab == item.prefab and
-    fn.IsFiniteUses(item) and
-    fn.GetRemainingUses(item) < fn.GetRemainingUses(blocking_item)
+    fn.GetDurability(item) < fn.GetDurability(blocking_item)
 
   if equip_blocking_item then
     return true, "equip"
@@ -1021,18 +1080,14 @@ function fn.InitOverflow(overflow)
     return
   end
 
+  local items = overflow:GetItems()
+  fn.ListenForAllDurabilityChanges(items)
+
   state.overflow = new.ClientContainer(overflow)
 
   local eslot = fn.GetEquipSlot(overflow.inst)
-  local evt = {}
 
-  local function OnItemGet(...) evt.OnItemGet(...) end
-  local function OnUnequip(...) evt.OnUnequip(...) end
-
-  overflow.inst:ListenForEvent("itemget", OnItemGet)
-  player:ListenForEvent("unequip", OnUnequip)
-
-  function evt.OnItemGet(inst, data)
+  local function OnItemGet(inst, data)
     local item = data.item
     local slot = data.slot
 
@@ -1048,7 +1103,7 @@ function fn.InitOverflow(overflow)
     fn.TryMoveToSavedSlot(item, state.overflow, slot)
   end
 
-  function evt.OnUnequip(inst, data)
+  local function OnUnequip(inst, data)
     if data and data.eslot == eslot then
       if type(overflow.inst.RemoveEventCallback) == "function" then
         overflow.inst:RemoveEventCallback("itemget", OnItemGet)
@@ -1058,6 +1113,9 @@ function fn.InitOverflow(overflow)
       player:RemoveEventCallback("unequip", OnUnequip)
     end
   end
+
+  overflow.inst:ListenForEvent("itemget", OnItemGet)
+  player:ListenForEvent("unequip", OnUnequip)
 end
 
 function fn.Player_OnNewActiveItem(inst, data)
@@ -1108,6 +1166,13 @@ function fn.InitInventory(inventory)
     -- Client Mode needs custom logic for overflow containers (backpack and the like)
     local overflow = inventory:GetOverflowContainer()
     fn.InitOverflow(overflow)
+
+    -- Client Mode cannot directly access item durability but has to use events
+    local items = inventory:GetItems()
+    fn.ListenForAllDurabilityChanges(items)
+
+    local equips = inventory:GetEquips()
+    fn.ListenForAllDurabilityChanges(equips)
   end
 end
 

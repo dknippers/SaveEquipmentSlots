@@ -556,9 +556,9 @@ function fn.Player_OnEquip(inst, data)
     -- function when prevslot has a value and is available, so we clear it here.
     item.prevslot = nil
   else
-    fn.IfHasComponent(item, "container", function(container)
-      fn.InitOverflow(inst, container)
-    end)
+    -- Client Mode: If we just equipped a container component this is some kind of backpack
+    -- so we initialize the proper logic to handle it
+    fn.IfHasComponent(item, "container", fn.InitOverflow)
   end
 end
 
@@ -574,8 +574,13 @@ function fn.IsMasterSim()
   end
 end
 
-function fn.DebugPrintTable(tbl, prefix, levels)
-  local levels = levels or 4
+function fn.DumpTable(tbl, levels, prefix)
+  if type(tbl) ~= "table" then
+    print(tostring(tbl))
+    return
+  end
+
+  local levels = levels or 2
 
   if levels < 1 then
     -- prevent endless loops on recursive tables
@@ -586,7 +591,7 @@ function fn.DebugPrintTable(tbl, prefix, levels)
     local key = (prefix or "")..tostring(k)
 
     if type(v) == "table" and levels > 1 then
-      fn.DebugPrintTable(v, key..".", levels - 1)
+      fn.DumpTable(v, levels - 1, key..".")
     else
       print(key.." = "..tostring(v))
     end
@@ -1005,9 +1010,14 @@ function fn.InitClasses()
   new.ClientInventory = ClientInventory.new
 end
 
-function fn.InitOverflow(inventory_inst, overflow)
+function fn.InitOverflow(overflow)
   if  not overflow or not overflow.inst or
       type(overflow.inst.ListenForEvent) ~= "function" then
+    return
+  end
+
+  local player = fn.GetPlayer()
+  if not player then
     return
   end
 
@@ -1020,7 +1030,7 @@ function fn.InitOverflow(inventory_inst, overflow)
   local function OnUnequip(...) evt.OnUnequip(...) end
 
   overflow.inst:ListenForEvent("itemget", OnItemGet)
-  inventory_inst:ListenForEvent("unequip", OnUnequip)
+  player:ListenForEvent("unequip", OnUnequip)
 
   function evt.OnItemGet(inst, data)
     local item = data.item
@@ -1045,7 +1055,7 @@ function fn.InitOverflow(inventory_inst, overflow)
         state.overflow = nil
       end
 
-      inventory_inst:RemoveEventCallback("unequip", OnUnequip)
+      player:RemoveEventCallback("unequip", OnUnequip)
     end
   end
 end
@@ -1095,10 +1105,9 @@ function fn.InitInventory(inventory)
   else
     state.inventory = new.ClientInventory(inventory)
 
+    -- Client Mode needs custom logic for overflow containers (backpack and the like)
     local overflow = inventory:GetOverflowContainer()
-    if overflow then
-      fn.InitOverflow(inventory.inst, overflow)
-    end
+    fn.InitOverflow(overflow)
   end
 end
 

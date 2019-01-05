@@ -526,7 +526,7 @@ function fn.Inventory_Equip(original_fn)
   end
 end
 
-function fn.Inventory_OnEquip(inst, data)
+function fn.Player_OnEquip(inst, data)
   local item = data.item
   local eslot = data.eslot
 
@@ -574,10 +574,10 @@ function fn.IsMasterSim()
   end
 end
 
-function fn.DebugPrintTable(tbl, prefix, depth)
-  local depth = depth or 1
+function fn.DebugPrintTable(tbl, prefix, levels)
+  local levels = levels or 4
 
-  if depth > 4 then
+  if levels < 1 then
     -- prevent endless loops on recursive tables
     return
   end
@@ -585,15 +585,15 @@ function fn.DebugPrintTable(tbl, prefix, depth)
   for k,v in pairs(tbl) do
     local key = (prefix or "")..tostring(k)
 
-    if type(v) == "table" then
-      fn.DebugPrintTable(v, key..".", depth + 1)
+    if type(v) == "table" and levels > 1 then
+      fn.DebugPrintTable(v, key..".", levels - 1)
     else
       print(key.." = "..tostring(v))
     end
   end
 end
 
-function fn.Inventory_OnItemGet(inst, data)
+function fn.Player_OnItemGet(inst, data)
   local item = data.item
   local slot = data.slot
 
@@ -1050,7 +1050,7 @@ function fn.InitOverflow(inventory_inst, overflow)
   end
 end
 
-function fn.Inventory_OnNewActiveItem(inst, data)
+function fn.Player_OnNewActiveItem(inst, data)
   if fn.IsLocked() then
     return
   end
@@ -1086,10 +1086,6 @@ function fn.InitInventorybar(inventorybar)
 end
 
 function fn.InitInventory(inventory)
-  inventory.inst:ListenForEvent("equip", fn.Inventory_OnEquip)
-  inventory.inst:ListenForEvent("itemget", fn.Inventory_OnItemGet)
-  inventory.inst:ListenForEvent("newactiveitem", fn.Inventory_OnNewActiveItem)
-
   if state.is_mastersim then
     state.inventory = new.MasterInventory(inventory)
 
@@ -1106,6 +1102,12 @@ function fn.InitInventory(inventory)
   end
 end
 
+function fn.InitPlayerEvents(player)
+  player:ListenForEvent("equip", fn.Player_OnEquip)
+  player:ListenForEvent("itemget", fn.Player_OnItemGet)
+  player:ListenForEvent("newactiveitem", fn.Player_OnNewActiveItem)
+end
+
 function fn.InitSaveEquipmentSlots()
   AddSimPostInit(function()
     state.is_mastersim = fn.IsMasterSim()
@@ -1113,8 +1115,9 @@ function fn.InitSaveEquipmentSlots()
 
   AddPlayerPostInit(function(player)
     fn.OnNextCycle(function()
+      -- Make sure it is the current player
       if player == fn.GetPlayer() then
-        -- Only initialize for the current player
+        fn.InitPlayerEvents(player)
         fn.IfHasComponent(player, "inventory", fn.InitInventory)
       end
     end)

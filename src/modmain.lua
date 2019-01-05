@@ -2,9 +2,6 @@
 local require = GLOBAL.require
 local setmetatable = GLOBAL.setmetatable
 
--- Detect Don't Starve Together
-local is_dst = GLOBAL.TheSim:GetGameID() == "DST"
-
 -- DS globals
 local CreateEntity = GLOBAL.CreateEntity
 
@@ -22,9 +19,6 @@ local items = {}
 -- item.prefab -> saved slot
 local slots = {}
 
--- item.prefab -> image button widget of item
-local image_buttons = {}
-
 -- Represents an object used to occupy an inventory slot temporarily
 -- when we are moving items around
 local OCCUPIED = { components = {} }
@@ -32,32 +26,38 @@ local OCCUPIED = { components = {} }
 -- saved slots when looking for an empty inventory slot for a new item
 local RESERVED = { components = {} }
 
--- true if we are currently in the process of equipping some equipment
-local is_equipping = false
-
 -- entity to run tasks with, necessary to gain access to DoTaskInTime()
 local tasker = CreateEntity()
 
--- Keeps track of equipment that is being manually moved,
--- in which case the saved slots might have to be updated.
-local manually_moved_equipment = {}
-
 -- Table to hold all local state of this mod.
 local state = {
+  -- item.prefab -> image button widget of item
+  image_buttons = {},
+
+  -- MasterInventory or ClientInventory
   inventory = nil,
+  -- Client Mode only: ClientContainer for the current backpack item
   overflow = nil,
+  -- HUD inventorybar
+  inventorybar = nil,
 
   -- When > 0, signals that this mod is moving items around.
   -- Controlled with fn.Lock() / fn.Unlock() and can be read with fn.IsLocked()
   -- Used to prevent updating saved slots during this time when items arrive in new slots.
   locks = 0,
 
-  hud = {
-    inventorybar = nil
-  },
-
   -- true for all cases except when connected to a remote host in DST
   is_mastersim = true,
+
+  -- Detect Don't Starve Together
+  is_dst = GLOBAL.TheSim:GetGameID() == "DST",
+
+  -- true if we are currently in the process of equipping some equipment
+  is_equipping = false,
+
+  -- Keeps track of equipment that is being manually moved,
+  -- in which case the saved slots might have to be updated.
+  manually_moved = {},
 
   -- cache of required prefabs
   prefab_cache = {},
@@ -100,7 +100,7 @@ function fn.IsLocked()
 end
 
 function fn.GetPlayer()
-  if is_dst then
+  if state.is_dst then
     -- It is renamed and a variable in DST
     return GLOBAL.ThePlayer
   else
@@ -187,8 +187,8 @@ function fn.GetAtlasAndImage(prefab)
 end
 
 function fn.CreateImageButton(prefab)
-  if  not state.hud.inventorybar or
-      not state.hud.inventorybar.toprow then
+  if  not state.inventorybar or
+      not state.inventorybar.toprow then
     return
   end
 
@@ -204,12 +204,12 @@ function fn.CreateImageButton(prefab)
 
   image_button.Kill = fn.ImageButton_Kill(image_button.Kill, prefab)
 
-  state.hud.inventorybar.toprow:AddChild(image_button)
+  state.inventorybar.toprow:AddChild(image_button)
 
   return image_button
 end
 
--- Clears image_buttons cache and refreshes the preview
+-- Clears image button cache and refreshes the preview
 -- for the given prefab when the ImageButton is killed
 function fn.ImageButton_Kill(original_fn, prefab)
   return function(self)
@@ -217,7 +217,7 @@ function fn.ImageButton_Kill(original_fn, prefab)
     original_fn(self)
 
     -- Clear cache
-    image_buttons[prefab] = nil
+    state.image_buttons[prefab] = nil
 
     -- Refresh Preview
     fn.OnNextCycle(function()
@@ -240,18 +240,18 @@ function fn.UpdatePreviewsForSlot(slot)
     return
   end
 
-  if not state.hud.inventorybar then
+  if not state.inventorybar then
     return
   end
 
-  local invslot = state.hud.inventorybar.inv[slot]
+  local invslot = state.inventorybar.inv[slot]
 
   if not invslot then
     return
   end
 
   for item_index, prefab in ipairs(items[slot]) do
-    local image_button = image_buttons[prefab]
+    local image_button = state.image_buttons[prefab]
     if not image_button then
       image_button = fn.CreateImageButton(prefab)
 
@@ -259,14 +259,14 @@ function fn.UpdatePreviewsForSlot(slot)
         return
       end
 
-      image_buttons[prefab] = image_button
+      state.image_buttons[prefab] = image_button
     end
 
     image_button:SetOnClick(function()
       fn.ClearSlot(prefab, slot)
     end)
 
-    fn.UpdateImageButtonPosition(image_button, item_index, state.hud.inventorybar, invslot)
+    fn.UpdateImageButtonPosition(image_button, item_index, state.inventorybar, invslot)
   end
 end
 
@@ -300,17 +300,17 @@ function fn.UpdateImageButtonPosition(image_button, item_index, inventorybar, in
 end
 
 function fn.RefreshImageButtons()
-  for _, btn in pairs(image_buttons) do
+  for _, btn in pairs(state.image_buttons) do
     btn:Kill()
   end
 end
 
 function fn.ClearPreview(prefab)
-  local image = image_buttons[prefab]
+  local image = state.image_buttons[prefab]
 
   if image then
     image:Kill()
-    image_buttons[prefab] = nil
+    state.image_buttons[prefab] = nil
   end
 end
 
@@ -440,22 +440,18 @@ end
 
 -- Specifies if item is equipment
 function fn.IsEquipment(item)
-  return fn.IfHasComponent(item, "equippable", true, false)
+  return fn.GetComponent(item, "equippable") ~= nil
 end
 
 function fn.GetEquipSlot(item)
-  return fn.WhenEquippable(item, function(eq)
+  return fn.IfHasComponent(item, "equippable", function(eq)
     local equipslot = eq.EquipSlot and eq:EquipSlot() or eq.equipslot
     return equipslot
   end)
 end
 
-function fn.WhenEquippable(item, when, whenNot)
-  return fn.IfHasComponent(item, "equippable", when, whenNot)
-end
-
 function fn.GetOverflowContainer(inventory)
-  if is_dst then
+  if state.is_dst then
     return inventory:GetOverflowContainer()
   else
     return fn.IfHasComponent(inventory.overflow, "container")
@@ -474,7 +470,7 @@ function fn.TrySkipSavedSlots(inventory, item, original_fn)
     -- Game reports no space, but is unaware of the overflow in most scenarios
     -- so we will check it again ourselves and put the item there if possible
     local container = fn.GetOverflowContainer(inventory)
-    local overflow = is_dst and container or inventory.overflow
+    local overflow = state.is_dst and container or inventory.overflow
 
     if container then
       for i = 1, container.numslots do
@@ -528,12 +524,9 @@ end
 
 function fn.Inventory_Equip(original_fn)
   return function(self, item, old_to_active)
-    is_equipping = true
-
+    state.is_equipping = true
     local original_return = original_fn(self, item, old_to_active)
-
-    is_equipping = false
-
+    state.is_equipping = false
     return original_return
   end
 end
@@ -576,7 +569,7 @@ function fn.Player_OnEquip(inst, data)
 end
 
 function fn.IsMasterSim()
-  if not is_dst then
+  if not state.is_dst then
     return true
   end
 
@@ -707,7 +700,7 @@ end
 function fn.GetItemMeta(item)
   local saved_slot = fn.GetSlot(item.prefab)
   local blocking_item = saved_slot and state.inventory:GetItem(saved_slot)
-  local was_manually_moved = not not manually_moved_equipment[item.GUID]
+  local was_manually_moved = not not state.manually_moved[item.GUID]
 
   return saved_slot, blocking_item, was_manually_moved
 end
@@ -750,7 +743,7 @@ function fn.TryMoveToSavedSlot(item, container, slot)
 end
 
 function fn.CanEquip(item)
-  if is_equipping or not fn.IsEquipment(item) then
+  if state.is_equipping or not fn.IsEquipment(item) then
     return false
   end
 
@@ -1038,11 +1031,11 @@ function fn.CreateClientInventory(ClientContainer)
   end
 
   function ClientInventory:Equip(slot, nextFn)
-    is_equipping = true
+    state.is_equipping = true
     fn.Lock()
     self:SlotToActiveItem(slot, function()
       self:EquipActiveItem(function()
-        is_equipping = false
+        state.is_equipping = false
         fn.Unlock()
         fn.IfFn(nextFn)
       end)
@@ -1126,15 +1119,15 @@ function fn.Player_OnNewActiveItem(inst, data)
   local item = data.item
 
   if item == nil then
-    manually_moved_equipment.dirty = false
+    state.manually_moved.dirty = false
     fn.OnNextCycle(function()
-      if not manually_moved_equipment.dirty then
-        fn.ClearTable(manually_moved_equipment)
+      if not state.manually_moved.dirty then
+        fn.ClearTable(state.manually_moved)
       end
     end)
   elseif fn.IsEquipment(item) then
-    manually_moved_equipment[item.GUID] = true
-    manually_moved_equipment.dirty = true
+    state.manually_moved[item.GUID] = true
+    state.manually_moved.dirty = true
   end
 end
 
@@ -1146,7 +1139,7 @@ function fn.Inventorybar_Rebuild(original_fn)
 end
 
 function fn.InitInventorybar(inventorybar)
-  state.hud.inventorybar = inventorybar
+  state.inventorybar = inventorybar
 
   if type(inventorybar.Rebuild) == "function" then
     inventorybar.Rebuild = fn.Inventorybar_Rebuild(inventorybar.Rebuild)

@@ -651,30 +651,54 @@ function fn.Player_OnItemGet(inst, data)
   local item = data.item
   local slot = data.slot
 
-  if  not state.inventory or fn.IsLocked() or
-      not slot or not fn.IsEquipment(item) then
+  if not state.is_mastersim then
+    if fn.IsDuplicateItemGetEvent(data) then
+      -- Client Mode receives some events twice (raised by client and server).
+      -- If we have already processed the client version (which is always earlier) we stop.
+      return
+    end
+  end
+
+  if not slot or not state.inventory or fn.IsLocked() then
     return
   end
 
-  if not state.is_mastersim then
-    if fn.IsDuplicateItemGetEvent(data) then
+  local is_equipment, saved_slot, blocking_item, was_manually_moved = fn.GetItemMeta(item)
+
+  local function process()
+    if not is_equipment then
       return
     end
 
+    local prefab_is_in_saved_slot = blocking_item and blocking_item.prefab == item.prefab
+    local should_save_slot = not prefab_is_in_saved_slot and (was_manually_moved or not fn.HasSlot(item.prefab))
+
+    if should_save_slot then
+      fn.SaveSlot(item.prefab, slot)
+    elseif not state.is_mastersim then
+      -- Client Mode: move item to its saved slot if needed
+      fn.TryMoveToSavedSlot(item, state.inventory, slot)
+    end
+  end
+
+  if not state.is_mastersim then
     fn.ListenForDurabilityChanges(item)
+
+    if config.reserve_saved_slots and not saved_slot and not was_manually_moved and items[slot] then
+      -- This is a saved slot, the incoming item is only allowed here
+      -- when the slot is saved by that item, otherwise it will be moved
+      if slot ~= fn.GetSlot(item.prefab) then
+        state.inventory:MoveAway(slot, function(was_moved)
+          if not was_moved then
+            process()
+          end
+        end)
+        return
+      end
+    end
   end
 
-  local saved_slot, blocking_item, was_manually_moved = fn.GetItemMeta(item)
-  local prefab_is_in_saved_slot = blocking_item and blocking_item.prefab == item.prefab
-
-  local should_save_slot = not prefab_is_in_saved_slot and (was_manually_moved or not fn.HasSlot(item.prefab))
-
-  if should_save_slot then
-    fn.SaveSlot(item.prefab, slot)
-  elseif not state.is_mastersim then
-    -- DST client mode: move item to its saved slot if needed
-    fn.TryMoveToSavedSlot(item, state.inventory, slot)
-  end
+  process()
 end
 
 function fn.IsDuplicateItemGetEvent(data)
@@ -698,20 +722,21 @@ function fn.IsDuplicateItemGetEvent(data)
 end
 
 function fn.GetItemMeta(item)
+  local is_equipment = fn.IsEquipment(item)
   local saved_slot = fn.GetSlot(item.prefab)
   local blocking_item = saved_slot and state.inventory:GetItem(saved_slot)
   local was_manually_moved = not not state.manually_moved[item.GUID]
 
-  return saved_slot, blocking_item, was_manually_moved
+  return is_equipment, saved_slot, blocking_item, was_manually_moved
 end
 
 function fn.TryMoveToSavedSlot(item, container, slot)
   if  not state.inventory or fn.IsLocked() or not slot or
-      not container or not fn.IsEquipment(item) then
+      not container or not item then
     return
   end
 
-  local saved_slot, blocking_item, was_manually_moved = fn.GetItemMeta(item)
+  local is_equipment, saved_slot, blocking_item, was_manually_moved = fn.GetItemMeta(item)
   local is_correct_slot = not saved_slot or (container == state.inventory and saved_slot == slot)
 
   if was_manually_moved or is_correct_slot then
@@ -974,6 +999,28 @@ function fn.CreateClientContainer()
     end)
   end
 
+  function ClientContainer:Move(from, to, nextFn)
+    fn.Lock()
+    self:SlotToActiveItem(from, function()
+      self:ActiveItemToSlot(to, function()
+        fn.Unlock()
+        fn.IfFn(nextFn)
+      end)
+    end)
+  end
+
+  function ClientContainer:Swap(slotA, slotB, nextFn)
+    fn.Lock()
+    self:SlotToActiveItem(slotA, function()
+      self:SwapActiveItemWithSlot(slotB, function()
+        self:ActiveItemToSlot(slotA, function()
+          fn.Unlock()
+          fn.IfFn(nextFn)
+        end)
+      end)
+    end)
+  end
+
   function ClientContainer:SwapWithInventory(from, inventory, to, nextFn)
     fn.Lock()
     inventory:WhenNotBusy(function()
@@ -1003,6 +1050,22 @@ function fn.CreateClientContainer()
     end)
   end
 
+  function ClientContainer:GetFreeSlot()
+    local numslots = self.container:GetNumSlots()
+    if numslots then
+      for slot = 1, numslots do
+        local item = self:GetItem(slot)
+        if not item then
+          return slot
+        end
+      end
+    end
+  end
+
+  function ClientContainer:GetItem(slot)
+    return self.container:GetItemInSlot(slot)
+  end
+
   return ClientContainer
 end
 
@@ -1026,10 +1089,6 @@ function fn.CreateClientInventory(ClientContainer)
     return self.inventory:GetEquippedItem(eslot)
   end
 
-  function ClientInventory:GetItem(slot)
-    return self.inventory:GetItemInSlot(slot)
-  end
-
   function ClientInventory:Equip(slot, nextFn)
     state.is_equipping = true
     fn.Lock()
@@ -1047,6 +1106,62 @@ function fn.CreateClientInventory(ClientContainer)
       self.inventory:EquipActiveItem()
       fn.IfFn(nextFn)
     end)
+  end
+
+  function ClientInventory:MoveToContainer(from, container, to, nextFn)
+    fn.Lock()
+    self:SlotToActiveItem(from, function()
+      self:WhenNotBusy(function()
+        container:ActiveItemToSlot(to, function()
+          fn.Unlock()
+          fn.IfFn(nextFn)
+        end)
+      end)
+    end)
+  end
+
+  function ClientInventory:MoveAway(from, nextFn)
+    local function nextOnSuccess()
+      fn.IfFn(nextFn, true)
+    end
+
+    local skip_saved_slots = config.reserve_saved_slots
+    local free_slot = self:GetFreeSlot(skip_saved_slots)
+
+    if not free_slot and state.overflow then
+      -- Look in overflow
+      free_slot = state.overflow:GetFreeSlot()
+      if free_slot then
+        self:MoveToContainer(from, state.overflow, free_slot, nextOnSuccess)
+        return
+      end
+    end
+
+    -- Still no free slot found, search in inventory again but now do NOT skip
+    -- saved slots. If the from slot is also a saved slot we will simply stay there
+    if not free_slot and skip_saved_slots and not items[from] then
+      free_slot = self:GetFreeSlot(false)
+    end
+
+    if free_slot then
+      self:Move(from, free_slot, nextOnSuccess)
+    else
+      fn.IfFn(nextFn, false)
+    end
+  end
+
+  function ClientInventory:GetFreeSlot(skip_saved_slots)
+    local numslots = self.inventory:GetNumSlots()
+    if numslots then
+      for slot = 1, numslots do
+        if not skip_saved_slots or not items[slot] then
+          local item = self:GetItem(slot)
+          if not item then
+            return slot
+          end
+        end
+      end
+    end
   end
 
   return ClientInventory
@@ -1125,7 +1240,7 @@ function fn.Player_OnNewActiveItem(inst, data)
         fn.ClearTable(state.manually_moved)
       end
     end)
-  elseif fn.IsEquipment(item) then
+  else
     state.manually_moved[item.GUID] = true
     state.manually_moved.dirty = true
   end

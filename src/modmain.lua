@@ -5,6 +5,7 @@ local setmetatable = GLOBAL.setmetatable
 -- DS globals
 local CreateEntity = GLOBAL.CreateEntity
 local TheSim = GLOBAL.TheSim
+local Prefabs = GLOBAL.Prefabs
 
 local ImageButton = require("widgets/imagebutton")
 
@@ -59,9 +60,6 @@ local state = {
   -- Keeps track of equipment that is being manually moved,
   -- in which case the saved slots might have to be updated.
   manually_moved = {},
-
-  -- cache of required prefabs
-  prefab_cache = {},
 
   -- DST Client Mode: GUIDs of items that have already been processed
   -- when their clientside "itemget" event was raised.
@@ -152,20 +150,11 @@ function fn.GetPlayerHud()
   return player and player.HUD
 end
 
-function fn.GetPrefabData(prefab)
-  if not state.prefab_cache[prefab] then
-    GLOBAL.pcall(function()
-      -- this call can fail, pcall will act as a try/catch mechanism
-      state.prefab_cache[prefab] = require("prefabs/"..prefab)
-    end)
-  end
+function fn.FindAtlas(prefab)
+  local prefab_data = Prefabs and Prefabs[prefab]
 
-  return state.prefab_cache[prefab]
-end
-
-function fn.FindAtlas(prefab_data)
-  if prefab_data and prefab_data.assets then
-    for i, asset in ipairs(prefab_data.assets) do
+  if prefab_data and type(prefab_data.assets) == "table" then
+    for _, asset in ipairs(prefab_data.assets) do
       if asset.type == "ATLAS" then
         return asset.file
       end
@@ -174,16 +163,9 @@ function fn.FindAtlas(prefab_data)
 end
 
 function fn.GetAtlasAndImage(prefab)
-  local prefab_data = fn.GetPrefabData(prefab)
-
+  local atlas = fn.FindAtlas(prefab) or "images/inventoryimages.xml"
   local image = prefab..".tex"
-  local atlas
-
-  if prefab_data then
-    atlas = fn.FindAtlas(prefab_data)
-  end
-
-  return atlas or "images/inventoryimages.xml", image
+  return atlas, image
 end
 
 function fn.CreateImageButton(prefab)

@@ -4,6 +4,7 @@ local setmetatable = GLOBAL.setmetatable
 
 -- DS globals
 local CreateEntity = GLOBAL.CreateEntity
+local TheSim = GLOBAL.TheSim
 
 local ImageButton = require("widgets/imagebutton")
 
@@ -50,7 +51,7 @@ local state = {
   is_mastersim = true,
 
   -- Detect Don't Starve Together
-  is_dst = GLOBAL.TheSim:GetGameID() == "DST",
+  is_dst = TheSim:GetGameID() == "DST",
 
   -- true if we are currently in the process of equipping some equipment
   is_equipping = false,
@@ -101,7 +102,6 @@ end
 
 function fn.GetPlayer()
   if state.is_dst then
-    -- It is renamed and a variable in DST
     return GLOBAL.ThePlayer
   else
     return GLOBAL.GetPlayer()
@@ -209,8 +209,7 @@ function fn.CreateImageButton(prefab)
   return image_button
 end
 
--- Clears image button cache and refreshes the preview
--- for the given prefab when the ImageButton is killed
+-- Clears image button cache for the given prefab when the ImageButton is killed
 function fn.ImageButton_Kill(original_fn, prefab)
   return function(self)
     -- Original Kill()
@@ -218,14 +217,6 @@ function fn.ImageButton_Kill(original_fn, prefab)
 
     -- Clear cache
     state.image_buttons[prefab] = nil
-
-    -- Refresh Preview
-    fn.OnNextCycle(function()
-      local slot = fn.GetSlot(prefab)
-      if slot then
-        fn.UpdatePreviewsForSlot(slot)
-      end
-    end)
   end
 end
 
@@ -300,8 +291,14 @@ function fn.UpdateImageButtonPosition(image_button, item_index, inventorybar, in
 end
 
 function fn.RefreshImageButtons()
-  for _, btn in pairs(state.image_buttons) do
-    btn:Kill()
+  for prefab, btn in pairs(state.image_buttons) do
+    fn.ClearPreview(prefab)
+    fn.OnNextCycle(function()
+      local slot = fn.GetSlot(prefab)
+      if slot then
+        fn.UpdatePreviewsForSlot(slot)
+      end
+    end)
   end
 end
 
@@ -373,19 +370,9 @@ function fn.GetDurability(item)
   return percent or 1
 end
 
-function fn.IsFiniteUses(item)
-  return fn.IfHasComponent(item, "finiteuses")
-end
-
 function fn.GetSlot(prefab)
   if prefab then
     return slots[prefab]
-  end
-end
-
-function fn.Equals(obj)
-  return function(other)
-    return other == obj
   end
 end
 
@@ -651,7 +638,7 @@ function fn.Player_OnItemGet(inst, data)
   local item = data.item
   local slot = data.slot
 
-  print("fn.Player_OnItemGet")
+  print("fn.Player_OnItemGet, item = "..tostring(item and item.prefab)..", slot = "..tostring(slot))
 
   local is_equipment = fn.IsEquipment(item)
 
@@ -676,7 +663,7 @@ function fn.Player_OnItemGet(inst, data)
     return
   end
 
-  print("Player_OnItemGet: item = "..tostring(item)..", slot = "..tostring(slot))
+  print("Player_OnItemGet: item = "..tostring(item and item.prefab)..", slot = "..tostring(slot))
 
   if state.is_mastersim then
     fn.MaybeSaveSlot(item, slot, state.inventory)
@@ -711,7 +698,7 @@ end
 
 function fn.MaybeMove(item, slot, container, nextFn)
   local should_move = fn.ShouldMove(item, slot, container)
-  print("MaybeMove: "..tostring(item).." | should_move = " .. tostring(should_move))
+  print("MaybeMove: "..tostring(item and item.prefab).." | should_move = " .. tostring(should_move))
   if not should_move then
     fn.IfFn(nextFn, slot, container)
   else
@@ -724,7 +711,7 @@ function fn.MaybeMove(item, slot, container, nextFn)
 end
 
 function fn.MoveAway(item, slot, container, nextFn)
-  print("MoveAway called for "..tostring(item).. " in slot "..tostring(slot))
+  print("MoveAway called for "..tostring(item and item.prefab).. " in slot "..tostring(slot))
   local new_slot, new_container = state.inventory:FindNewSlot(item, slot, container)
   print("MoveAway: new_slot = "..tostring(new_slot))
 
@@ -747,7 +734,7 @@ function fn.MoveAway(item, slot, container, nextFn)
   else
     container:Grab(slot, function()
       if new_slot == "equip" then
-        print("MoveAway: equipping "..tostring(item))
+        print("MoveAway: equipping "..tostring(item and item.prefab))
         state.inventory:EquipActiveItem(callback)
       elseif new_slot then
         local blocking_item = new_container:GetItem(new_slot)
@@ -757,7 +744,7 @@ function fn.MoveAway(item, slot, container, nextFn)
           new_container:Put(new_slot, callback)
         end
       else
-        print("MoveAway: "..tostring(item).." stays as active item")
+        print("MoveAway: "..tostring(item and item.prefab).." stays as active item")
         callback()
       end
     end)
@@ -765,30 +752,33 @@ function fn.MoveAway(item, slot, container, nextFn)
 end
 
 function fn.ShouldMove(item, slot, container)
-  print("ShouldMove called for "..tostring(item).." - slot "..tostring(slot))
+  print("ShouldMove called for "..tostring(item and item.prefab).." - slot "..tostring(slot))
   local is_equipment, saved_slot, blocking_item, was_manually_moved = fn.GetItemMeta(item)
 
   if was_manually_moved then
     print("fn.ShouldMove: was manually moved")
     return false
-  elseif not is_equipment or not saved_slot then
-    print("ShouldMove: not equipment or not saved_slot")
-    if not config.reserve_saved_slots then
-      print("ShouldMove: not config.reserve_saved_slots")
-      return false
-    else
-      local is_in_saved_slot = items[slot] ~= nil
-      print("ShouldMove: is_in_saved_slot = "..tostring(is_in_saved_slot))
-      return is_in_saved_slot
-    end
-  else
+  elseif saved_slot then
     if saved_slot == slot and container == state.inventory then
-      print("ShouldMove: saved_slot == slot for "..tostring(item))
+      print("ShouldMove: saved_slot == slot for "..tostring(item and item.prefab))
       return false
     end
 
     local should_move_blocking_item, action = fn.ShouldMakeSpace(saved_slot, blocking_item, item)
-    return not blocking_item or should_move_blocking_item
+    if not blocking_item or should_move_blocking_item then
+      print("ShouldMove: will move to saved_slot "..saved_slot)
+      return true
+    end
+  end
+
+  -- All other cases: only move when reserving a saved slot
+  if not config.reserve_saved_slots then
+    print("ShouldMove: not config.reserve_saved_slots")
+    return false
+  else
+    local is_in_saved_slot = container == state.inventory and items[slot] ~= nil
+    print("ShouldMove: is_in_saved_slot = "..tostring(is_in_saved_slot))
+    return is_in_saved_slot
   end
 end
 
@@ -1034,11 +1024,11 @@ function fn.CreateClientContainer()
         local active_item = state.inventory:GetActiveItem()
 
         if active_item then
+          print("Swapping "..tostring(active_item.prefab).. " with "..tostring(item and item.prefab).." in slot "..slot)
           self.container:SwapActiveItemWithSlot(slot)
-          print("Swapping "..tostring(active_item.prefab).. " with "..tostring(item.prefab).." in slot "..slot)
         else
+          print("Grabbing "..tostring(item and item.prefab).. " of slot "..slot)
           self.container:TakeActiveItemFromAllOfSlot(slot)
-          print("Grabbing "..tostring(item.prefab).. " of slot "..slot)
         end
 
         fn.Unlock()
@@ -1056,11 +1046,14 @@ function fn.CreateClientContainer()
         local active_item = state.inventory:GetActiveItem()
 
         if item then
+          print("Swapping "..tostring(active_item.prefab).. " with "..tostring(item and item.prefab).." in slot "..slot)
           self.container:SwapActiveItemWithSlot(slot)
-          print("Swapping "..tostring(active_item.prefab).. " with "..tostring(item.prefab).." in slot "..slot)
         else
+          if active_item then
+            print("Putting "..tostring(active_item.prefab).. " in slot "..slot)
+          end
+
           self.container:PutAllOfActiveItemInSlot(slot)
-          print("Putting "..tostring(active_item.prefab).. " in slot "..slot)
         end
 
         fn.Unlock()
@@ -1190,7 +1183,7 @@ function fn.CreateClientInventory(ClientContainer)
   end
 
   function ClientInventory:FindNewSlot(item, slot, container)
-    print("FindNewSlot for "..tostring(item).." in slot "..tostring(slot))
+    print("FindNewSlot for "..tostring(item and item.prefab).." in slot "..tostring(slot))
     local is_equipment, saved_slot, blocking_item, was_manually_moved = fn.GetItemMeta(item)
     if saved_slot and (saved_slot ~= slot or container ~= state.inventory)  then
       print("FindNewSlot: has saved_slot somewhere else: "..saved_slot)
@@ -1203,7 +1196,7 @@ function fn.CreateClientInventory(ClientContainer)
     end
 
     if config.allow_equip_for_space and is_equipment and fn.CanEquip(item) then
-      print("FindNewSlot: should equip "..tostring(item))
+      print("FindNewSlot: should equip "..tostring(item and item.prefab))
       return "equip", self
     end
 
@@ -1235,48 +1228,6 @@ function fn.CreateClientInventory(ClientContainer)
       self.inventory:EquipActiveItem()
       fn.IfFn(nextFn)
     end)
-  end
-
-  function ClientInventory:MoveToContainer(from, container, to, nextFn)
-    fn.Lock()
-    self:Grab(from, function()
-      self:WhenNotBusy(function()
-        container:Put(to, function()
-          fn.Unlock()
-          fn.IfFn(nextFn)
-        end)
-      end)
-    end)
-  end
-
-  function ClientInventory:MoveAway(from, nextFn)
-    local function nextOnSuccess()
-      fn.IfFn(nextFn, true)
-    end
-
-    local skip_saved_slots = config.reserve_saved_slots
-    local free_slot = self:GetFreeSlot(skip_saved_slots)
-
-    if not free_slot and state.overflow then
-      -- Look in overflow
-      free_slot = state.overflow:GetFreeSlot()
-      if free_slot then
-        self:MoveToContainer(from, state.overflow, free_slot, nextOnSuccess)
-        return
-      end
-    end
-
-    -- Still no free slot found, search in inventory again but now do NOT skip
-    -- saved slots. If the from slot is also a saved slot we will simply stay there
-    if not free_slot and skip_saved_slots and not items[from] then
-      free_slot = self:GetFreeSlot(false)
-    end
-
-    if free_slot then
-      self:Move(from, free_slot, nextOnSuccess)
-    else
-      fn.IfFn(nextFn, false)
-    end
   end
 
   function ClientInventory:GetFreeSlot(skip_saved_slots)

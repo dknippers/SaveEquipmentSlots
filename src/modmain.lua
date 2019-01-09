@@ -145,11 +145,6 @@ function fn.UndoReserveSavedSlots(inventory)
   end)
 end
 
-function fn.GetPlayerHud()
-  local player = fn.GetPlayer()
-  return player and player.HUD
-end
-
 function fn.FindAtlas(prefab)
   local prefab_data = Prefabs and Prefabs[prefab]
 
@@ -175,17 +170,13 @@ function fn.CreateImageButton(prefab)
   end
 
   local atlas, image = fn.GetAtlasAndImage(prefab)
-
   if not atlas or not image then
     return
   end
 
   local image_button = ImageButton(atlas, image)
-
   image_button:SetScale(0.9)
-
   image_button.Kill = fn.ImageButton_Kill(image_button.Kill, prefab)
-
   state.inventorybar.toprow:AddChild(image_button)
 
   return image_button
@@ -209,16 +200,11 @@ function fn.OnNextCycle(onNextCycle)
 end
 
 function fn.UpdatePreviewsForSlot(slot)
-  if not config.enable_previews or not items[slot] then
-    return
-  end
-
-  if not state.inventorybar then
+  if not config.enable_previews or not items[slot] or not state.inventorybar then
     return
   end
 
   local invslot = state.inventorybar.inv[slot]
-
   if not invslot then
     return
   end
@@ -399,12 +385,6 @@ end
 
 function fn.HasSlot(prefab)
   return fn.GetSlot(prefab) ~= nil
-end
-
-function fn.GetItemOwner(item)
-  return fn.IfHasComponent(item, "inventoryitem", function(inventoryitem)
-    return inventoryitem:GetGrandOwner()
-  end)
 end
 
 -- Specifies if item is equipment
@@ -620,25 +600,19 @@ function fn.Player_OnItemGet(inst, data)
   local item = data.item
   local slot = data.slot
 
-  print("fn.Player_OnItemGet, item = "..tostring(item and item.prefab)..", slot = "..tostring(slot))
-
   local is_equipment = fn.IsEquipment(item)
 
   if not state.is_mastersim then
     if fn.IsDuplicateItemGetEvent(data) then
       -- Client Mode receives some events twice (raised by client and server).
       -- If we have already processed the client version (which is always earlier) we stop.
-      print("fn.Player_OnItemGet: Ignore duplicate")
+      print("fn.Player_OnItemGet: Duplicate #"..tostring(slot).." | ".. tostring(item and item.prefab))
       return
     end
 
     if is_equipment then
       fn.ListenForDurabilityChanges(item)
     end
-  end
-
-  if fn.IsLocked() then
-    print("fn.Player_OnItemGet: LOCKED")
   end
 
   if not slot or not state.inventory or fn.IsLocked() then
@@ -680,7 +654,6 @@ end
 
 function fn.MaybeMove(item, slot, container, nextFn)
   local should_move = fn.ShouldMove(item, slot, container)
-  print("MaybeMove: "..tostring(item and item.prefab).." | should_move = " .. tostring(should_move))
   if not should_move then
     fn.IfFn(nextFn, slot, container)
   else
@@ -693,44 +666,45 @@ function fn.MaybeMove(item, slot, container, nextFn)
 end
 
 function fn.MoveAway(item, slot, container, nextFn)
-  print("MoveAway called for "..tostring(item and item.prefab).. " in slot "..tostring(slot))
   local new_slot, new_container = state.inventory:FindNewSlot(item, slot, container)
   print("MoveAway: new_slot = "..tostring(new_slot))
+  if (new_slot == nil and new_container == nil) or (new_slot == slot and new_container == container) then
+    -- Not moving
+    return fn.IfFn(nextFn, slot, container)
+  end
 
   local function callback()
     fn.IfFn(nextFn, new_slot, new_container)
   end
 
-  if new_slot == nil then
-    print("MoveAway: no new slot available")
-    -- No slot free -> swap with active item or just stay in old slot
-    local active_item = state.inventory:GetActiveItem()
-    if active_item then
-      print("MoveAway: Have an active item")
-      state.inventory:Grab(slot, callback)
+  -- Moving to new_slot, new_container.
+  -- First grab the item so our old slot is made available
+  container:Grab(slot, function()
+    if new_slot == "equip" then
+      print("MoveAway: equipping "..tostring(item and item.prefab))
+      state.inventory:EquipActiveItem(callback)
+    elseif new_slot then
+      local blocking_item = new_container:GetItem(new_slot)
+      if blocking_item then
+        fn.MoveAway(blocking_item, new_slot, new_container, function(ns, nc)
+          if ns == new_slot and nc == new_container then
+            -- If it somehow fails we just put it in our old slot, as we have already
+            -- grabbed the item from container / slot so it's available.
+            new_container:Put(new_slot, function()
+              container:Put(slot, callback)
+            end)
+          else
+            callback()
+          end
+        end)
+      else
+        new_container:Put(new_slot, callback)
+      end
     else
-      print("MoveAway: No active item, just stay in place")
-      new_slot, new_container = slot, container
+      print("MoveAway: "..tostring(item and item.prefab).." stays as active item")
       callback()
     end
-  else
-    container:Grab(slot, function()
-      if new_slot == "equip" then
-        print("MoveAway: equipping "..tostring(item and item.prefab))
-        state.inventory:EquipActiveItem(callback)
-      elseif new_slot then
-        local blocking_item = new_container:GetItem(new_slot)
-        if blocking_item then
-          fn.MoveAway(blocking_item, new_slot, new_container, callback)
-        else
-          new_container:Put(new_slot, callback)
-        end
-      else
-        print("MoveAway: "..tostring(item and item.prefab).." stays as active item")
-        callback()
-      end
-    end)
-  end
+  end)
 end
 
 function fn.ShouldMove(item, slot, container)
@@ -738,7 +712,6 @@ function fn.ShouldMove(item, slot, container)
   local is_equipment, saved_slot, blocking_item, was_manually_moved = fn.GetItemMeta(item)
 
   if was_manually_moved then
-    print("fn.ShouldMove: was manually moved")
     return false
   elseif saved_slot then
     if saved_slot == slot and container == state.inventory then
@@ -755,7 +728,6 @@ function fn.ShouldMove(item, slot, container)
 
   -- All other cases: only move when reserving a saved slot
   if not config.reserve_saved_slots then
-    print("ShouldMove: not config.reserve_saved_slots")
     return false
   else
     local is_in_saved_slot = container == state.inventory and items[slot] ~= nil
@@ -770,15 +742,17 @@ function fn.IsDuplicateItemGetEvent(data)
   end
 
   local item = data.item
+  local slot = data.slot
   local is_server_event = not not data.ignore_stacksize_anim
 
   if is_server_event then
-    if state.client_processed[item.GUID] then
+    local processed = state.client_processed[item.GUID]
+    if processed and processed.slot == data.slot then
       state.client_processed[item.GUID] = nil
       return true
     end
   else
-    state.client_processed[item.GUID] = true
+    state.client_processed[item.GUID] = { slot = slot }
   end
 
   return false
@@ -1206,8 +1180,10 @@ function fn.CreateClientInventory(ClientContainer)
   end
 
   function ClientInventory:EquipActiveItem(nextFn)
+    state.is_equipping = true
     self:WhenNotBusy(function()
       self.inventory:EquipActiveItem()
+      state.is_equipping = false
       fn.IfFn(nextFn)
     end)
   end

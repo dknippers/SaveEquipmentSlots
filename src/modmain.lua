@@ -606,7 +606,6 @@ function fn.Player_OnItemGet(inst, data)
     if fn.IsDuplicateItemGetEvent(data) then
       -- Client Mode receives some events twice (raised by client and server).
       -- If we have already processed the client version (which is always earlier) we stop.
-      print("fn.Player_OnItemGet: Duplicate #"..tostring(slot).." | ".. tostring(item and item.prefab))
       return
     end
 
@@ -619,8 +618,6 @@ function fn.Player_OnItemGet(inst, data)
     return
   end
 
-  print("Player_OnItemGet: item = "..tostring(item and item.prefab)..", slot = "..tostring(slot))
-
   if state.is_mastersim then
     fn.MaybeSaveSlot(item, slot, state.inventory)
   else
@@ -632,20 +629,16 @@ end
 
 function fn.MaybeSaveSlot(item, slot, container)
   if container ~= state.inventory then
-    print("MaybeSaveSlot: container is not inventory")
     return
   end
 
   local is_equipment, saved_slot, blocking_item, was_manually_moved = fn.GetItemMeta(item)
   if not is_equipment then
-    print("MaybeSaveSlot: not equipment")
     return
   end
 
   local prefab_is_in_saved_slot = blocking_item and blocking_item.prefab == item.prefab
   local should_save_slot = not prefab_is_in_saved_slot and (was_manually_moved or not fn.HasSlot(item.prefab))
-
-  print("MaybeSaveSlot: should_save_slot = " ..tostring(should_save_slot))
 
   if should_save_slot then
     fn.SaveSlot(item.prefab, slot)
@@ -667,7 +660,6 @@ end
 
 function fn.MoveAway(item, slot, container, nextFn)
   local new_slot, new_container = state.inventory:FindNewSlot(item, slot, container)
-  print("MoveAway: new_slot = "..tostring(new_slot))
   if (new_slot == nil and new_container == nil) or (new_slot == slot and new_container == container) then
     -- Not moving
     return fn.IfFn(nextFn, slot, container)
@@ -681,7 +673,6 @@ function fn.MoveAway(item, slot, container, nextFn)
   -- First grab the item so our old slot is made available
   container:Grab(slot, function()
     if new_slot == "equip" then
-      print("MoveAway: equipping "..tostring(item and item.prefab))
       state.inventory:EquipActiveItem(callback)
     elseif new_slot then
       local blocking_item = new_container:GetItem(new_slot)
@@ -701,27 +692,23 @@ function fn.MoveAway(item, slot, container, nextFn)
         new_container:Put(new_slot, callback)
       end
     else
-      print("MoveAway: "..tostring(item and item.prefab).." stays as active item")
       callback()
     end
   end)
 end
 
 function fn.ShouldMove(item, slot, container)
-  print("ShouldMove called for "..tostring(item and item.prefab).." - slot "..tostring(slot))
   local is_equipment, saved_slot, blocking_item, was_manually_moved = fn.GetItemMeta(item)
 
   if was_manually_moved then
     return false
   elseif saved_slot then
     if saved_slot == slot and container == state.inventory then
-      print("ShouldMove: saved_slot == slot for "..tostring(item and item.prefab))
       return false
     end
 
     local should_move_blocking_item, action = fn.ShouldMakeSpace(saved_slot, blocking_item, item)
     if not blocking_item or should_move_blocking_item then
-      print("ShouldMove: will move to saved_slot "..saved_slot)
       return true
     end
   end
@@ -731,7 +718,6 @@ function fn.ShouldMove(item, slot, container)
     return false
   else
     local is_in_saved_slot = container == state.inventory and items[slot] ~= nil
-    print("ShouldMove: is_in_saved_slot = "..tostring(is_in_saved_slot))
     return is_in_saved_slot
   end
 end
@@ -980,10 +966,8 @@ function fn.CreateClientContainer()
         local active_item = state.inventory:GetActiveItem()
 
         if active_item then
-          print("Swapping "..tostring(active_item.prefab).. " with "..tostring(item and item.prefab).." in slot "..slot)
           self.container:SwapActiveItemWithSlot(slot)
         else
-          print("Grabbing "..tostring(item and item.prefab).. " of slot "..slot)
           self.container:TakeActiveItemFromAllOfSlot(slot)
         end
 
@@ -1002,13 +986,8 @@ function fn.CreateClientContainer()
         local active_item = state.inventory:GetActiveItem()
 
         if item then
-          print("Swapping "..tostring(active_item.prefab).. " with "..tostring(item and item.prefab).." in slot "..slot)
           self.container:SwapActiveItemWithSlot(slot)
         else
-          if active_item then
-            print("Putting "..tostring(active_item.prefab).. " in slot "..slot)
-          end
-
           self.container:PutAllOfActiveItemInSlot(slot)
         end
 
@@ -1139,43 +1118,34 @@ function fn.CreateClientInventory(ClientContainer)
   end
 
   function ClientInventory:FindNewSlot(item, slot, container)
-    print("FindNewSlot for "..tostring(item and item.prefab).." in slot "..tostring(slot))
     local is_equipment, saved_slot, blocking_item, was_manually_moved = fn.GetItemMeta(item)
     if saved_slot and (saved_slot ~= slot or container ~= state.inventory)  then
-      print("FindNewSlot: has saved_slot somewhere else: "..saved_slot)
       local should_move, action = fn.ShouldMakeSpace(saved_slot, blocking_item, item)
       if not blocking_item or should_move then
         return saved_slot, self
-      else
-        print("FindNewSlot: blocking item should not be moved")
       end
     end
 
     if config.allow_equip_for_space and is_equipment and fn.CanEquip(item) then
-      print("FindNewSlot: should equip "..tostring(item and item.prefab))
       return "equip", self
     end
 
     local free_slot = self:GetFreeSlot(config.reserve_saved_slots)
     if free_slot then
-      print("FindNewSlot: found free slot: "..free_slot)
       return free_slot, self
     elseif state.overflow then
       free_slot = state.overflow:GetFreeSlot()
       if free_slot then
-        print("FindNewSlot: found free slot in overflow: "..free_slot)
         return free_slot, state.overflow
       end
     elseif config.reserve_saved_slots then
       free_slot = self:GetFreeSlot(false)
       if free_slot then
-        print("FindNewSlot: found free slot (ignoring saved slots): "..free_slot)
         return free_slot, self
       end
     end
 
     -- No free slot available
-    print("FindNewSlot: no free slot available")
     return nil, nil
   end
 

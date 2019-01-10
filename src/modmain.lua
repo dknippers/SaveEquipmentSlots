@@ -1,11 +1,11 @@
 -- Lua built-ins that are only accessible through GLOBAL
 local require = GLOBAL.require
-
--- Detect Don't Starve Together
-local is_dst = GLOBAL.TheSim:GetGameID() == "DST"
+local setmetatable = GLOBAL.setmetatable
 
 -- DS globals
 local CreateEntity = GLOBAL.CreateEntity
+local TheSim = GLOBAL.TheSim
+local Prefabs = GLOBAL.Prefabs
 
 local ImageButton = require("widgets/imagebutton")
 
@@ -21,47 +21,58 @@ local items = {}
 -- item.prefab -> saved slot
 local slots = {}
 
--- item.prefab -> image button widget of item
-local image_buttons = {}
-
 -- Represents an object used to occupy an inventory slot temporarily
--- when we are automatically rearranging items
+-- when we are moving items around
 local OCCUPIED = { components = {} }
 -- Another object we use to block an inventory slot, this one is used to reserve
 -- saved slots when looking for an empty inventory slot for a new item
 local RESERVED = { components = {} }
 
--- true if we are currently in the process of equipping some equipment
-local is_equipping = false
-
 -- entity to run tasks with, necessary to gain access to DoTaskInTime()
 local tasker = CreateEntity()
 
--- when unequipping / obtaining a piece of equipment,
--- we sometimes rearrange other items to put the new item
--- in its saved slot. when this relocation process is underway
--- (i.e., rearranging > 0), we will not be changing any of
--- the saved slots, as the player is not manually moving anything.
--- this is a number as it can be going on for more than 1
--- item at a time through recursive calls to
-local rearranging = 0
-
-local manually_moved_equipment = {}
-
 -- Table to hold all local state of this mod.
 local state = {
-  inventory = nil,
-  overflow = nil,
+  -- item.prefab -> image button widget of item
+  image_buttons = {},
 
-  hud = {
-    inventorybar = nil
-  },
+  -- MasterInventory or ClientInventory
+  inventory = nil,
+  -- Client Mode only: ClientContainer for the current backpack item
+  overflow = nil,
+  -- HUD inventorybar
+  inventorybar = nil,
+
+  -- When > 0, signals that this mod is moving items around.
+  -- Controlled with fn.Lock() / fn.Unlock() and can be read with fn.IsLocked()
+  -- Used to prevent updating saved slots during this time when items arrive in new slots.
+  locks = 0,
 
   -- true for all cases except when connected to a remote host in DST
   is_mastersim = true,
 
-  -- cache of required prefabs
-  prefab_cache = {}
+  -- Detect Don't Starve Together
+  is_dst = TheSim:GetGameID() == "DST",
+
+  -- true if we are currently in the process of equipping some equipment
+  is_equipping = false,
+
+  -- Keeps track of equipment that is being manually moved,
+  -- in which case the saved slots might have to be updated.
+  manually_moved = {},
+
+  -- DST Client Mode: GUIDs of items that have already been processed
+  -- when their clientside "itemget" event was raised.
+  client_processed = {},
+
+  -- ClientMode only -- durability per item as it is only communicated through the "percentusedchange" event
+  -- and not accessible anymore through a finiteuses component which is only available to the mastersim
+  durability = {
+    -- Durability per item, key is item.GUID
+    items = {},
+    -- Listener functions per item, key is item.GUID
+    listeners = {}
+  }
 }
 
 -- All functions will be stored in this table,
@@ -71,9 +82,24 @@ local state = {
 -- When storing them all in a table, this limitation is removed.
 local fn = {}
 
+-- Table to hold the classes used by this mod;
+-- MasterInventory, ClientInventory and ClientContainer
+local new = {}
+
+function fn.Lock()
+  state.locks = state.locks + 1
+end
+
+function fn.Unlock()
+  state.locks = state.locks - 1
+end
+
+function fn.IsLocked()
+  return state.locks > 0
+end
+
 function fn.GetPlayer()
-  if is_dst then
-    -- It is renamed and a variable in DST
+  if state.is_dst then
     return GLOBAL.ThePlayer
   else
     return GLOBAL.GetPlayer()
@@ -119,25 +145,11 @@ function fn.UndoReserveSavedSlots(inventory)
   end)
 end
 
-function fn.GetPlayerHud()
-  local player = fn.GetPlayer()
-  return player and player.HUD
-end
+function fn.FindAtlas(prefab)
+  local prefab_data = Prefabs and Prefabs[prefab]
 
-function fn.GetPrefabData(prefab)
-  if not state.prefab_cache[prefab] then
-    GLOBAL.pcall(function()
-      -- this call can fail, pcall will act as a try/catch mechanism
-      state.prefab_cache[prefab] = require("prefabs/"..prefab)
-    end)
-  end
-
-  return state.prefab_cache[prefab]
-end
-
-function fn.FindAtlas(prefab_data)
-  if prefab_data and prefab_data.assets then
-    for i, asset in ipairs(prefab_data.assets) do
+  if prefab_data and type(prefab_data.assets) == "table" then
+    for _, asset in ipairs(prefab_data.assets) do
       if asset.type == "ATLAS" then
         return asset.file
       end
@@ -146,58 +158,38 @@ function fn.FindAtlas(prefab_data)
 end
 
 function fn.GetAtlasAndImage(prefab)
-  local prefab_data = fn.GetPrefabData(prefab)
-
+  local atlas = fn.FindAtlas(prefab) or "images/inventoryimages.xml"
   local image = prefab..".tex"
-  local atlas
-
-  if prefab_data then
-    atlas = fn.FindAtlas(prefab_data)
-  end
-
-  return atlas or "images/inventoryimages.xml", image
+  return atlas, image
 end
 
 function fn.CreateImageButton(prefab)
-  if  not state.hud.inventorybar or
-      not state.hud.inventorybar.toprow then
+  if  not state.inventorybar or
+      not state.inventorybar.toprow then
     return
   end
 
   local atlas, image = fn.GetAtlasAndImage(prefab)
-
   if not atlas or not image then
     return
   end
 
   local image_button = ImageButton(atlas, image)
-
   image_button:SetScale(0.9)
-
   image_button.Kill = fn.ImageButton_Kill(image_button.Kill, prefab)
-
-  state.hud.inventorybar.toprow:AddChild(image_button)
+  state.inventorybar.toprow:AddChild(image_button)
 
   return image_button
 end
 
--- Clears image_buttons cache and refreshes the preview
--- for the given prefab when the ImageButton is killed
+-- Clears image button cache for the given prefab when the ImageButton is killed
 function fn.ImageButton_Kill(original_fn, prefab)
   return function(self)
     -- Original Kill()
     original_fn(self)
 
     -- Clear cache
-    image_buttons[prefab] = nil
-
-    -- Refresh Preview
-    fn.OnNextCycle(function()
-      local slot = fn.GetSlot(prefab)
-      if slot then
-        fn.UpdatePreviewsForSlot(slot)
-      end
-    end)
+    state.image_buttons[prefab] = nil
   end
 end
 
@@ -208,22 +200,17 @@ function fn.OnNextCycle(onNextCycle)
 end
 
 function fn.UpdatePreviewsForSlot(slot)
-  if not config.enable_previews or not items[slot] then
+  if not config.enable_previews or not items[slot] or not state.inventorybar then
     return
   end
 
-  if not state.hud.inventorybar then
-    return
-  end
-
-  local invslot = state.hud.inventorybar.inv[slot]
-
+  local invslot = state.inventorybar.inv[slot]
   if not invslot then
     return
   end
 
   for item_index, prefab in ipairs(items[slot]) do
-    local image_button = image_buttons[prefab]
+    local image_button = state.image_buttons[prefab]
     if not image_button then
       image_button = fn.CreateImageButton(prefab)
 
@@ -231,14 +218,14 @@ function fn.UpdatePreviewsForSlot(slot)
         return
       end
 
-      image_buttons[prefab] = image_button
+      state.image_buttons[prefab] = image_button
     end
 
     image_button:SetOnClick(function()
       fn.ClearSlot(prefab, slot)
     end)
 
-    fn.UpdateImageButtonPosition(image_button, item_index, state.hud.inventorybar, invslot)
+    fn.UpdateImageButtonPosition(image_button, item_index, state.inventorybar, invslot)
   end
 end
 
@@ -272,17 +259,23 @@ function fn.UpdateImageButtonPosition(image_button, item_index, inventorybar, in
 end
 
 function fn.RefreshImageButtons()
-  for _, btn in pairs(image_buttons) do
-    btn:Kill()
+  for prefab, btn in pairs(state.image_buttons) do
+    fn.ClearPreview(prefab)
+    fn.OnNextCycle(function()
+      local slot = fn.GetSlot(prefab)
+      if slot then
+        fn.UpdatePreviewsForSlot(slot)
+      end
+    end)
   end
 end
 
 function fn.ClearPreview(prefab)
-  local image = image_buttons[prefab]
+  local image = state.image_buttons[prefab]
 
   if image then
     image:Kill()
-    image_buttons[prefab] = nil
+    state.image_buttons[prefab] = nil
   end
 end
 
@@ -303,7 +296,7 @@ function fn.ClearTable(tbl)
   end
 end
 
-function fn.callOrValue(v, ...)
+function fn.CallOrValue(v, ...)
   return type(v) == "function" and v(...) or v
 end
 
@@ -324,37 +317,30 @@ function fn.IfHasComponent(o, component_name, ifFn, ifNot)
   if component then
     return type(ifFn) == "function" and ifFn(component) or component
   else
-    return fn.callOrValue(ifNot)
+    return fn.CallOrValue(ifNot)
   end
 end
 
-function fn.WhenFiniteUses(item, when, whenNot)
-  return fn.IfHasComponent(item, "finiteuses", when, whenNot)
-end
+function fn.GetDurability(item)
+  local percent
 
-function fn.GetRemainingUses(item)
-  return fn.WhenFiniteUses(item, function(fu)
-    -- Never return nil, if .current is nil we return 0 instead.
-    return fu.current or 0
-  end,
-  -- When the item does not have a finiteuses component
-  -- we treat it as never used, i.e. 100.
-  100)
-end
+  if state.is_mastersim then
+    percent = fn.IfHasComponent("finiteuses", function(fu)
+      return fu:GetPercent()
+    end)
+  else
+    local key = item and item.GUID
+    percent = key and state.durability.items[key]
+  end
 
-function fn.IsFiniteUses(item)
-  return fn.IfHasComponent(item, "finiteuses")
+  -- Never return nil, if no percentage is available we treat it as
+  -- an item with infinite durability (e.g., Lucy)
+  return percent or 1
 end
 
 function fn.GetSlot(prefab)
   if prefab then
     return slots[prefab]
-  end
-end
-
-function fn.Equals(obj)
-  return function(other)
-    return other == obj
   end
 end
 
@@ -401,45 +387,20 @@ function fn.HasSlot(prefab)
   return fn.GetSlot(prefab) ~= nil
 end
 
-function fn.GetItemOwner(item)
-  return fn.IfHasComponent(item, "inventoryitem", function(inventoryitem)
-    return inventoryitem:GetGrandOwner()
-  end)
-end
-
 -- Specifies if item is equipment
 function fn.IsEquipment(item)
-  return fn.IfHasComponent(item, "equippable", true, false)
-end
-
-function fn.CanEquip(item, inventory)
-  if is_equipping then
-    -- We are currently in the process of equipping something else,
-    -- we cannot equip any item now
-    return false
-  end
-
-  local equipslot = fn.GetEquipSlot(item)
-  if equipslot then
-    return inventory.equipslots[equipslot] == nil
-  else
-    return false
-  end
+  return fn.GetComponent(item, "equippable") ~= nil
 end
 
 function fn.GetEquipSlot(item)
-  return fn.WhenEquippable(item, function(eq)
+  return fn.IfHasComponent(item, "equippable", function(eq)
     local equipslot = eq.EquipSlot and eq:EquipSlot() or eq.equipslot
     return equipslot
   end)
 end
 
-function fn.WhenEquippable(item, when, whenNot)
-  return fn.IfHasComponent(item, "equippable", when, whenNot)
-end
-
 function fn.GetOverflowContainer(inventory)
-  if is_dst then
+  if state.is_dst then
     return inventory:GetOverflowContainer()
   else
     return fn.IfHasComponent(inventory.overflow, "container")
@@ -458,7 +419,7 @@ function fn.TrySkipSavedSlots(inventory, item, original_fn)
     -- Game reports no space, but is unaware of the overflow in most scenarios
     -- so we will check it again ourselves and put the item there if possible
     local container = fn.GetOverflowContainer(inventory)
-    local overflow = is_dst and container or inventory.overflow
+    local overflow = state.is_dst and container or inventory.overflow
 
     if container then
       for i = 1, container.numslots do
@@ -493,7 +454,7 @@ function fn.Inventory_GetNextAvailableSlot(original_fn)
       return original_fn(self, item)
     end
 
-    local made_space = state.inventory.MakeSpace(saved_slot, item)
+    local made_space = state.inventory:MakeSpace(saved_slot, item)
 
     if not made_space then
       if config.reserve_saved_slots then
@@ -512,17 +473,14 @@ end
 
 function fn.Inventory_Equip(original_fn)
   return function(self, item, old_to_active)
-    is_equipping = true
-
+    state.is_equipping = true
     local original_return = original_fn(self, item, old_to_active)
-
-    is_equipping = false
-
+    state.is_equipping = false
     return original_return
   end
 end
 
-function fn.Inventory_OnEquip(inst, data)
+function fn.Player_OnEquip(inst, data)
   local item = data.item
   local eslot = data.eslot
 
@@ -552,14 +510,15 @@ function fn.Inventory_OnEquip(inst, data)
     -- function when prevslot has a value and is available, so we clear it here.
     item.prevslot = nil
   else
-    fn.IfHasComponent(item, "container", function(container)
-      fn.InitOverflow(inst, container)
-    end)
+    -- Client Mode: If we just equipped a container component this is some kind of backpack
+    -- so we initialize the proper logic to handle it
+    fn.IfHasComponent(item, "container", fn.InitOverflow)
+    fn.ListenForDurabilityChanges(item)
   end
 end
 
 function fn.IsMasterSim()
-  if not is_dst then
+  if not state.is_dst then
     return true
   end
 
@@ -570,10 +529,15 @@ function fn.IsMasterSim()
   end
 end
 
-function fn.DebugPrintTable(tbl, prefix, depth)
-  local depth = depth or 1
+function fn.DumpTable(tbl, levels, prefix)
+  if type(tbl) ~= "table" then
+    print(tostring(tbl))
+    return
+  end
 
-  if depth > 4 then
+  local levels = levels or 2
+
+  if levels < 1 then
     -- prevent endless loops on recursive tables
     return
   end
@@ -581,54 +545,226 @@ function fn.DebugPrintTable(tbl, prefix, depth)
   for k,v in pairs(tbl) do
     local key = (prefix or "")..tostring(k)
 
-    if type(v) == "table" then
-      fn.DebugPrintTable(v, key..".", depth + 1)
+    if type(v) == "table" and levels > 1 then
+      fn.DumpTable(v, levels - 1, key..".")
     else
       print(key.." = "..tostring(v))
     end
   end
 end
 
-function fn.Inventory_OnItemGet(inst, data)
-  local item = data.item
-  local slot = data.slot
-
-  if  not state.inventory or rearranging > 0 or
-      not slot or not fn.IsEquipment(item) then
+function fn.ListenForAllDurabilityChanges(items)
+  if type(items) ~= "table" then
     return
   end
 
-  local saved_slot = fn.GetSlot(item.prefab)
-  local blocking_item = saved_slot and state.inventory.GetItem(saved_slot)
-  local prefab_is_in_saved_slot = blocking_item and blocking_item.prefab == item.prefab
-  local was_manually_moved = manually_moved_equipment[item.GUID]
+  for _, item in ipairs(items) do
+    fn.ListenForDurabilityChanges(item)
+  end
+end
 
+function fn.ListenForDurabilityChanges(item)
+  local key = item and item.GUID
+  if not key then
+    return
+  end
+
+  if state.durability.listeners[key] ~= nil then
+    -- Already listening
+    return
+  end
+
+  if not fn.IsEquipment(item) then
+    return
+  end
+
+  local function listener(inst, data)
+    if data and data.percent then
+      state.durability.items[key] = data.percent
+    end
+  end
+
+  item:ListenForEvent("percentusedchange", listener)
+  state.durability.listeners[key] = listener
+
+  -- Stop listening and clean up when item is destroyed
+  item:ListenForEvent("onremove", function()
+    item:RemoveEventCallback("percentusedchange", listener)
+
+    state.durability.listeners[key] = nil
+    state.durability.items[key] = nil
+  end)
+end
+
+function fn.Player_OnItemGet(inst, data)
+  local item = data.item
+  local slot = data.slot
+
+  local is_equipment = fn.IsEquipment(item)
+
+  if not state.is_mastersim then
+    if fn.IsDuplicateItemGetEvent(data) then
+      -- Client Mode receives some events twice (raised by client and server).
+      -- If we have already processed the client version (which is always earlier) we stop.
+      return
+    end
+
+    if is_equipment then
+      fn.ListenForDurabilityChanges(item)
+    end
+  end
+
+  if not slot or not state.inventory or fn.IsLocked() then
+    return
+  end
+
+  if state.is_mastersim then
+    fn.MaybeSaveSlot(item, slot, state.inventory)
+  else
+    fn.MaybeMove(item, slot, state.inventory, function(new_slot, new_container)
+      fn.MaybeSaveSlot(item, new_slot, new_container)
+    end)
+  end
+end
+
+function fn.MaybeSaveSlot(item, slot, container)
+  if container ~= state.inventory then
+    return
+  end
+
+  local is_equipment, saved_slot, blocking_item, was_manually_moved = fn.GetItemMeta(item)
+  if not is_equipment then
+    return
+  end
+
+  local prefab_is_in_saved_slot = blocking_item and blocking_item.prefab == item.prefab
   local should_save_slot = not prefab_is_in_saved_slot and (was_manually_moved or not fn.HasSlot(item.prefab))
 
   if should_save_slot then
     fn.SaveSlot(item.prefab, slot)
-  elseif not state.is_mastersim then
-    if not was_manually_moved and saved_slot and slot ~= saved_slot then
-      -- DST client mode: move item to its saved slot if needed
-      if not blocking_item then
-        state.inventory.Move(slot, saved_slot)
-      else
-        local should_move, action = fn.ShouldMove(saved_slot, blocking_item, item)
-        if should_move then
-          if action == "equip" then
-            -- TODO: Fix better
-            if blocking_item.prefab ~= item.prefab then
-              state.inventory.Equip(saved_slot, function()
-                state.inventory.Move(slot, saved_slot)
-              end)
-            end
-          elseif action == "move" then
-            state.inventory.Swap(slot, saved_slot)
+  end
+end
+
+function fn.MaybeMove(item, slot, container, nextFn)
+  local should_move = fn.ShouldMove(item, slot, container)
+  if not should_move then
+    fn.IfFn(nextFn, slot, container)
+  else
+    fn.Lock()
+    fn.MoveAway(item, slot, container, function(new_slot, new_container)
+      fn.Unlock()
+      fn.IfFn(nextFn, new_slot, new_container)
+    end)
+  end
+end
+
+function fn.MoveAway(item, slot, container, nextFn)
+  local new_slot, new_container = state.inventory:FindNewSlot(item, slot, container)
+  if (new_slot == nil and new_container == nil) or (new_slot == slot and new_container == container) then
+    -- Not moving
+    return fn.IfFn(nextFn, slot, container)
+  end
+
+  local function callback()
+    fn.IfFn(nextFn, new_slot, new_container)
+  end
+
+  -- Moving to new_slot, new_container.
+  -- First grab the item so our old slot is made available
+  container:Grab(slot, function()
+    if new_slot == "equip" then
+      state.inventory:EquipActiveItem(callback)
+    elseif new_slot then
+      local blocking_item = new_container:GetItem(new_slot)
+      if blocking_item then
+        fn.MoveAway(blocking_item, new_slot, new_container, function(ns, nc)
+          if ns == new_slot and nc == new_container then
+            -- If it somehow fails we just put it in our old slot, as we have already
+            -- grabbed the item from container / slot so it's available.
+            new_container:Put(new_slot, function()
+              container:Put(slot, callback)
+            end)
+          else
+            callback()
           end
-        end
+        end)
+      else
+        new_container:Put(new_slot, callback)
       end
+    else
+      callback()
+    end
+  end)
+end
+
+function fn.ShouldMove(item, slot, container)
+  local is_equipment, saved_slot, blocking_item, was_manually_moved = fn.GetItemMeta(item)
+
+  if was_manually_moved then
+    return false
+  elseif saved_slot then
+    if saved_slot == slot and container == state.inventory then
+      return false
+    end
+
+    local should_move_blocking_item, action = fn.ShouldMakeSpace(saved_slot, blocking_item, item)
+    if not blocking_item or should_move_blocking_item then
+      return true
     end
   end
+
+  -- All other cases: only move when reserving a saved slot
+  if not config.reserve_saved_slots then
+    return false
+  else
+    local is_in_saved_slot = container == state.inventory and items[slot] ~= nil
+    return is_in_saved_slot
+  end
+end
+
+function fn.IsDuplicateItemGetEvent(data)
+  if not data or not data.item or not data.item.GUID then
+    return false
+  end
+
+  local item = data.item
+  local slot = data.slot
+  local is_server_event = not not data.ignore_stacksize_anim
+
+  if is_server_event then
+    local processed = state.client_processed[item.GUID]
+    if processed and processed.slot == data.slot then
+      state.client_processed[item.GUID] = nil
+      return true
+    end
+  else
+    state.client_processed[item.GUID] = { slot = slot }
+  end
+
+  return false
+end
+
+function fn.GetItemMeta(item)
+  local is_equipment = fn.IsEquipment(item)
+  local saved_slot = fn.GetSlot(item.prefab)
+  local blocking_item = saved_slot and state.inventory:GetItem(saved_slot)
+  local was_manually_moved = not not state.manually_moved[item.GUID]
+
+  return is_equipment, saved_slot, blocking_item, was_manually_moved
+end
+
+function fn.CanEquip(item)
+  if state.is_equipping or not fn.IsEquipment(item) then
+    return false
+  end
+
+  local eslot = fn.GetEquipSlot(item)
+  if not eslot then
+    return false
+  end
+
+  local equipped_item = state.inventory:GetEquippedItem(eslot)
+  return not equipped_item
 end
 
 function fn.Inventory_OnLoad(original_fn)
@@ -657,7 +793,7 @@ function fn.IfFn(value, ...)
 end
 
 -- true if the blocking_item in the slot should be moved to make space for item
-function fn.ShouldMove(slot, blocking_item, item)
+function fn.ShouldMakeSpace(slot, blocking_item, item)
   if not blocking_item then
     return false
   end
@@ -674,13 +810,12 @@ function fn.ShouldMove(slot, blocking_item, item)
 
   local equip_blocking_item =
     config.allow_equip_for_space and
-    state.inventory.CanEquip(blocking_item)
+    fn.CanEquip(blocking_item)
 
   local move_blocking_item =
     not equip_blocking_item and
     blocking_item.prefab == item.prefab and
-    fn.IsFiniteUses(item) and
-    fn.GetRemainingUses(item) < fn.GetRemainingUses(blocking_item)
+    fn.GetDurability(item) < fn.GetDurability(blocking_item)
 
   if equip_blocking_item then
     return true, "equip"
@@ -691,306 +826,431 @@ function fn.ShouldMove(slot, blocking_item, item)
   end
 end
 
-function fn.MakeContainer(container, is_mastersim)
-  local c = {}
+function fn.CreateMasterInventory()
+  local MasterInventory = {}
+  MasterInventory.__index = MasterInventory
 
-  if not is_mastersim then
-    local function CancelRefreshTask()
-      if  container.classified and
-          container.classified._refreshtask and
-          type(container.classified._refreshtask.Cancel) == "function" then
-        container.classified._refreshtask:Cancel()
-        container.classified._refreshtask = nil
-        container.classified._busy = false
-        return true
-      else
-        return false
-      end
-    end
+  function MasterInventory.new(inventory)
+    local instance = {
+      inventory = inventory
+    }
 
-    function c.IsBusy()
-      return container and container.classified and container.classified.IsBusy and container.classified:IsBusy()
-    end
+    setmetatable(instance, MasterInventory)
 
-    function c.WhenNotBusy(whenFn, skipCancel)
-      if c.IsBusy() then
-        local function retry()
-          c.WhenNotBusy(whenFn, true)
-        end
-
-        if not skipCancel and CancelRefreshTask() then
-          retry()
-        else
-          fn.OnNextCycle(retry)
-        end
-      else
-        whenFn()
-      end
-    end
-
-    function c.SlotToActiveItem(from, nextFn)
-      c.WhenNotBusy(function()
-        container:TakeActiveItemFromAllOfSlot(from)
-        fn.IfFn(nextFn)
-      end)
-    end
-
-    function c.ActiveItemToSlot(slot, nextFn)
-      c.WhenNotBusy(function()
-        container:PutAllOfActiveItemInSlot(slot)
-        fn.IfFn(nextFn)
-      end)
-    end
-
-    function c.ReturnActiveItem(nextFn)
-      c.WhenNotBusy(function()
-        container:ReturnActiveItem()
-        fn.IfFn(nextFn)
-      end)
-    end
-
-    function c.SwapActiveItemWithSlot(slot, nextFn)
-      c.WhenNotBusy(function()
-        container:SwapActiveItemWithSlot(slot)
-        fn.IfFn(nextFn)
-      end)
-    end
+    return instance
   end
 
-  return c
-end
-
-function fn.MakeInventory(inventory, is_mastersim)
-  -- The table representing the inventory interface
-  -- we will create based on the given inventory and
-  -- whether or not we are the master simulation
-  local inv = {}
-
-  local container = fn.MakeContainer(inventory, is_mastersim)
-
-  GLOBAL.setmetatable(inv, { __index = container })
-
-  function inv.GetEquippedItem(eslot)
-    return inventory:GetEquippedItem(eslot)
+  function MasterInventory:GetItem(slot)
+    return self.inventory.itemslots[slot]
   end
 
-  function inv.GetItem(slot)
-    return inventory:GetItemInSlot(slot)
+  function MasterInventory:SetItem(slot, item)
+    self.inventory.itemslots[slot] = item
   end
 
-  function inv.CanEquip(item)
-    if is_equipping or not fn.IsEquipment(item) then
-      return false
-    end
+  function MasterInventory:MakeSpace(slot, item)
+    local blocking_item = self:GetItem(slot)
 
-    local eslot = fn.GetEquipSlot(item)
-    local equipped_item = inv.GetEquippedItem(eslot)
-
-    return not equipped_item
-  end
-
-  if is_mastersim then
-    function inv.MakeSpace(slot, item)
-      local blocking_item = inv.GetItem(slot)
-
-      if not blocking_item then
-        -- It's already empty
-        return true
-      end
-
-      local should_move, action = fn.ShouldMove(slot, blocking_item, item)
-
-      if not should_move then
-        return false
-      end
-
-      if action == "equip" then
-        inv.Equip(blocking_item)
-      elseif action == "move" then
-        inv.MoveAway(slot)
-      end
-
+    if not blocking_item then
+      -- It's already empty
       return true
     end
 
-    function inv.MoveAway(from)
-      local blocking_item = inventory.itemslots[from]
-      if not blocking_item then
-        return
-      end
+    local should_move, action = fn.ShouldMakeSpace(slot, blocking_item, item)
 
-      -- Before moving the item, we occupy its current slot with the OCCUPIED object
-      -- otherwise the game would not move blocking_item at all,
-      -- presumably as it is already present in the inventory.
-      -- In addition, the OCCUPIED object makes sure this slot will not be touched
-      -- again in a recursive call to this method which would otherwise possibly try to
-      -- move the this item again or equip it.
-      inventory.itemslots[from] = OCCUPIED
-
-      -- Record the fact we are automatically rearranging items
-      rearranging = rearranging + 1
-
-      -- Find a new slot for the blocking item -- skipping the sound
-      inventory:GiveItem(blocking_item, nil, nil, true)
-
-      rearranging = rearranging - 1
-
-      -- The saved_slot is cleared as we have made space by moving away blocking_item.
-      -- The game will be putting item in there at a slightly later time
-      inventory.itemslots[from] = nil
+    if not should_move then
+      return false
     end
 
-    function inv.Equip(item)
-      inventory:Equip(item)
-    end
-  else
-    function inv.Swap(slotA, slotB, nextFn)
-      rearranging = rearranging + 1
-      inv.SlotToActiveItem(slotA, function()
-        inv.SwapActiveItemWithSlot(slotB, function()
-          inv.ActiveItemToSlot(slotA, function()
-            rearranging = rearranging - 1
-            fn.IfFn(nextFn)
-          end)
-        end)
-      end)
+    if action == "equip" then
+      self:Equip(blocking_item)
+    elseif action == "move" then
+      self:MoveAway(slot)
     end
 
-    function inv.Move(from, to, nextFn)
-      rearranging = rearranging + 1
+    return true
+  end
 
-      inv.SlotToActiveItem(from, function()
-        inv.ActiveItemToSlot(to, function()
-          rearranging = rearranging - 1
-          fn.IfFn(nextFn)
-        end)
-      end)
+  function MasterInventory:MoveAway(from)
+    local blocking_item = self:GetItem(from)
+    if not blocking_item then
+      return
     end
 
-    function inv.Equip(slot, nextFn)
-      is_equipping = true
-      inv.SlotToActiveItem(slot, function()
-        inv.EquipActiveItem(function()
-          is_equipping = false
-          fn.IfFn(nextFn)
-        end)
-      end)
-    end
+    -- Before moving the item, we occupy its current slot with the OCCUPIED object
+    -- otherwise the game would not move blocking_item at all,
+    -- presumably as it is already present in the inventory.
+    -- In addition, the OCCUPIED object makes sure this slot will not be touched
+    -- again in a recursive call to this method which would otherwise possibly try to
+    -- move the this item again or equip it.
+    self:SetItem(from, OCCUPIED)
 
-    function inv.EquipActiveItem(nextFn)
-      inv.WhenNotBusy(function()
-        inventory:EquipActiveItem()
-        fn.IfFn(nextFn)
-      end)
+    -- Record the fact we are automatically moving items
+    fn.Lock()
+
+    -- Find a new slot for the blocking item -- skipping the sound
+    self.inventory:GiveItem(blocking_item, nil, nil, true)
+
+    fn.Unlock()
+
+    -- The saved_slot is cleared as we have made space by moving away blocking_item.
+    -- The game will be putting item in there at a slightly later time
+    self:SetItem(from, nil)
+  end
+
+  function MasterInventory:Equip(item)
+    self.inventory:Equip(item)
+  end
+
+  function MasterInventory:GetEquippedItem(eslot)
+    return self.inventory:GetEquippedItem(eslot)
+  end
+
+  return MasterInventory
+end
+
+function fn.CreateClientContainer()
+  local ClientContainer = {}
+  ClientContainer.__index = ClientContainer
+
+  function ClientContainer.new(container)
+    local instance = {
+      container = container
+    }
+
+    setmetatable(instance, ClientContainer)
+
+    return instance
+  end
+
+  local function CancelRefreshTask(container)
+    if  container.classified and
+        container.classified._refreshtask and
+        type(container.classified._refreshtask.Cancel) == "function" then
+      container.classified._refreshtask:Cancel()
+      container.classified._refreshtask = nil
+      container.classified._busy = false
+      return true
+    else
+      return false
     end
   end
 
-  return inv
+  function ClientContainer:IsBusy()
+    return  self.container and self.container.classified and
+            self.container.classified.IsBusy and self.container.classified:IsBusy()
+  end
+
+  function ClientContainer:WhenNotBusy(whenFn, skipCancel)
+    if self:IsBusy() then
+      local function retry()
+        self:WhenNotBusy(whenFn, true)
+      end
+
+      if not skipCancel and CancelRefreshTask(self.container) then
+        retry()
+      else
+        fn.OnNextCycle(retry)
+      end
+    else
+      whenFn()
+    end
+  end
+
+  function ClientContainer:Grab(slot, nextFn)
+    fn.Lock()
+
+    self:WhenNotBusy(function()
+      state.inventory:WhenNotBusy(function()
+        local item = self:GetItem(slot)
+        local active_item = state.inventory:GetActiveItem()
+
+        if active_item then
+          self.container:SwapActiveItemWithSlot(slot)
+        else
+          self.container:TakeActiveItemFromAllOfSlot(slot)
+        end
+
+        fn.Unlock()
+        fn.IfFn(nextFn)
+      end)
+    end)
+  end
+
+  function ClientContainer:Put(slot, nextFn)
+    fn.Lock()
+
+    self:WhenNotBusy(function()
+      state.inventory:WhenNotBusy(function()
+        local item = self:GetItem(slot)
+        local active_item = state.inventory:GetActiveItem()
+
+        if item then
+          self.container:SwapActiveItemWithSlot(slot)
+        else
+          self.container:PutAllOfActiveItemInSlot(slot)
+        end
+
+        fn.Unlock()
+        fn.IfFn(nextFn)
+      end)
+    end)
+  end
+
+  function ClientContainer:SwapActiveItemWithSlot(slot, nextFn)
+    self:WhenNotBusy(function()
+      self.container:SwapActiveItemWithSlot(slot)
+      fn.IfFn(nextFn)
+    end)
+  end
+
+  function ClientContainer:Move(from, to, nextFn)
+    fn.Lock()
+    self:Grab(from, function()
+      self:Put(to, function()
+        fn.Unlock()
+        fn.IfFn(nextFn)
+      end)
+    end)
+  end
+
+  function ClientContainer:Swap(slotA, slotB, nextFn)
+    fn.Lock()
+    self:Grab(slotA, function()
+      self:SwapActiveItemWithSlot(slotB, function()
+        self:Put(slotA, function()
+          fn.Unlock()
+          fn.IfFn(nextFn)
+        end)
+      end)
+    end)
+  end
+
+  function ClientContainer:SwapWithInventory(from, inventory, to, nextFn)
+    fn.Lock()
+    inventory:WhenNotBusy(function()
+      self:Grab(from, function()
+        inventory:SwapActiveItemWithSlot(to, function()
+          inventory:WhenNotBusy(function()
+            self:Put(from, function()
+              fn.Unlock()
+              fn.IfFn(nextFn)
+            end)
+          end)
+        end)
+      end)
+    end)
+  end
+
+  function ClientContainer:MoveToInventory(from, inventory, to, nextFn)
+    fn.Lock()
+
+    inventory:WhenNotBusy(function()
+      self:Grab(from, function()
+        inventory:Put(to, function()
+          fn.Unlock()
+          fn.IfFn(nextFn)
+        end)
+      end)
+    end)
+  end
+
+  function ClientContainer:GetFreeSlot()
+    local numslots = self.container:GetNumSlots()
+    if numslots then
+      for slot = 1, numslots do
+        local item = self:GetItem(slot)
+        if not item then
+          return slot
+        end
+      end
+    end
+  end
+
+  function ClientContainer:GetItem(slot)
+    return self.container:GetItemInSlot(slot)
+  end
+
+  return ClientContainer
 end
 
-function fn.InitOverflow(inventory_inst, overflow)
+function fn.CreateClientInventory(ClientContainer)
+  local ClientInventory = {}
+  ClientInventory.__index = ClientInventory
+
+  setmetatable(ClientInventory, ClientContainer)
+
+  function ClientInventory.new(inventory)
+    local instance = ClientContainer.new(inventory)
+
+    instance.inventory = inventory
+
+    setmetatable(instance, ClientInventory)
+
+    return instance
+  end
+
+  function ClientInventory:GetEquippedItem(eslot)
+    return self.inventory:GetEquippedItem(eslot)
+  end
+
+  function ClientInventory:GetActiveItem()
+    return self.inventory:GetActiveItem()
+  end
+
+  function ClientInventory:EquipActiveItem(nextFn)
+    self:WhenNotBusy(function()
+      self.inventory:EquipActiveItem()
+      fn.IfFn(nextFn)
+    end)
+  end
+
+  function ClientInventory:Equip(slot, nextFn)
+    state.is_equipping = true
+    fn.Lock()
+    self:Grab(slot, function()
+      self:EquipActiveItem(function()
+        state.is_equipping = false
+        fn.Unlock()
+        fn.IfFn(nextFn)
+      end)
+    end)
+  end
+
+  function ClientInventory:FindNewSlot(item, slot, container)
+    local is_equipment, saved_slot, blocking_item, was_manually_moved = fn.GetItemMeta(item)
+    if saved_slot and (saved_slot ~= slot or container ~= state.inventory)  then
+      local should_move, action = fn.ShouldMakeSpace(saved_slot, blocking_item, item)
+      if not blocking_item or should_move then
+        return saved_slot, self
+      end
+    end
+
+    if config.allow_equip_for_space and is_equipment and fn.CanEquip(item) then
+      return "equip", self
+    end
+
+    local free_slot = self:GetFreeSlot(config.reserve_saved_slots)
+    if free_slot then
+      return free_slot, self
+    elseif state.overflow then
+      free_slot = state.overflow:GetFreeSlot()
+      if free_slot then
+        return free_slot, state.overflow
+      end
+    elseif config.reserve_saved_slots then
+      free_slot = self:GetFreeSlot(false)
+      if free_slot then
+        return free_slot, self
+      end
+    end
+
+    -- No free slot available
+    return nil, nil
+  end
+
+  function ClientInventory:EquipActiveItem(nextFn)
+    state.is_equipping = true
+    self:WhenNotBusy(function()
+      self.inventory:EquipActiveItem()
+      state.is_equipping = false
+      fn.IfFn(nextFn)
+    end)
+  end
+
+  function ClientInventory:GetFreeSlot(skip_saved_slots)
+    local numslots = self.inventory:GetNumSlots()
+    if numslots then
+      for slot = 1, numslots do
+        if not skip_saved_slots or not items[slot] then
+          local item = self:GetItem(slot)
+          if not item then
+            return slot
+          end
+        end
+      end
+    end
+  end
+
+  return ClientInventory
+end
+
+function fn.InitClasses()
+  local MasterInventory = fn.CreateMasterInventory()
+  local ClientContainer = fn.CreateClientContainer()
+  local ClientInventory = fn.CreateClientInventory(ClientContainer)
+
+  new.MasterInventory = MasterInventory.new
+  new.ClientContainer = ClientContainer.new
+  new.ClientInventory = ClientInventory.new
+end
+
+function fn.InitOverflow(overflow)
   if  not overflow or not overflow.inst or
       type(overflow.inst.ListenForEvent) ~= "function" then
     return
   end
 
-  state.overflow = fn.MakeContainer(overflow)
+  local player = fn.GetPlayer()
+  if not player then
+    return
+  end
+
+  local items = overflow:GetItems()
+  fn.ListenForAllDurabilityChanges(items)
+
+  state.overflow = new.ClientContainer(overflow)
 
   local eslot = fn.GetEquipSlot(overflow.inst)
-  local evt = {}
 
-  local function OnItemGet(...) evt.OnItemGet(...) end
-  local function OnUnequip(...) evt.OnUnequip(...) end
-
-  overflow.inst:ListenForEvent("itemget", OnItemGet)
-  inventory_inst:ListenForEvent("unequip", OnUnequip)
-
-  function evt.OnItemGet(inst, data)
+  local function OnItemGet(inst, data)
     local item = data.item
     local slot = data.slot
 
-    if  not item or not fn.IsEquipment(item) or rearranging > 0 or
+    if  not item or not fn.IsEquipment(item) or fn.IsLocked() or
         not state.overflow or not state.inventory then
       return
     end
 
-    local saved_slot = fn.GetSlot(item.prefab)
-    if not saved_slot then
+    if not state.is_mastersim and fn.IsDuplicateItemGetEvent(data) then
       return
     end
 
-    local blocking_item = state.inventory.GetItem(saved_slot)
-
-    if manually_moved_equipment[item.GUID] then
-      if not blocking_item or blocking_item.prefab ~= item.prefab then
-        fn.ClearSlot(item.prefab, saved_slot)
-      end
-    else
-      if not blocking_item then
-        rearranging = rearranging + 1
-        state.overflow.SlotToActiveItem(slot, function()
-          state.inventory.WhenNotBusy(function()
-            state.inventory.ActiveItemToSlot(saved_slot, function()
-              rearranging = rearranging - 1
-            end)
-          end)
-        end)
-      else
-        local should_move, action = fn.ShouldMove(saved_slot, blocking_item, item)
-        if should_move then
-          rearranging = rearranging + 1
-
-          state.inventory.WhenNotBusy(function()
-            state.overflow.SlotToActiveItem(slot, function()
-              state.inventory.SwapActiveItemWithSlot(saved_slot, function()
-                local function nextFn()
-                  rearranging = rearranging - 1
-                end
-
-                if action == "equip" then
-                  state.inventory.EquipActiveItem(nextFn)
-                elseif action == "move" then
-                  state.inventory.WhenNotBusy(function()
-                    state.overflow.ActiveItemToSlot(slot, nextFn)
-                  end)
-                end
-              end)
-            end)
-          end)
-        end
-      end
-    end
+    fn.MaybeMove(item, slot, state.overflow)
   end
 
-  function evt.OnUnequip(inst, data)
+  local function OnUnequip(inst, data)
     if data and data.eslot == eslot then
       if type(overflow.inst.RemoveEventCallback) == "function" then
         overflow.inst:RemoveEventCallback("itemget", OnItemGet)
         state.overflow = nil
       end
 
-      inventory_inst:RemoveEventCallback("unequip", OnUnequip)
+      player:RemoveEventCallback("unequip", OnUnequip)
     end
   end
+
+  overflow.inst:ListenForEvent("itemget", OnItemGet)
+  player:ListenForEvent("unequip", OnUnequip)
 end
 
-function fn.Inventory_OnNewActiveItem(inst, data)
-  if rearranging > 0 then
+function fn.Player_OnNewActiveItem(inst, data)
+  if fn.IsLocked() then
     return
   end
 
   local item = data.item
 
   if item == nil then
-    manually_moved_equipment.dirty = false
+    state.manually_moved.dirty = false
     fn.OnNextCycle(function()
-      if not manually_moved_equipment.dirty then
-        fn.ClearTable(manually_moved_equipment)
+      if not state.manually_moved.dirty then
+        fn.ClearTable(state.manually_moved)
       end
     end)
-  elseif fn.IsEquipment(item) then
-    manually_moved_equipment[item.GUID] = true
-    manually_moved_equipment.dirty = true
+  else
+    state.manually_moved[item.GUID] = true
+    state.manually_moved.dirty = true
   end
 end
 
@@ -1002,7 +1262,7 @@ function fn.Inventorybar_Rebuild(original_fn)
 end
 
 function fn.InitInventorybar(inventorybar)
-  state.hud.inventorybar = inventorybar
+  state.inventorybar = inventorybar
 
   if type(inventorybar.Rebuild) == "function" then
     inventorybar.Rebuild = fn.Inventorybar_Rebuild(inventorybar.Rebuild)
@@ -1010,22 +1270,32 @@ function fn.InitInventorybar(inventorybar)
 end
 
 function fn.InitInventory(inventory)
-  state.inventory = fn.MakeInventory(inventory, state.is_mastersim)
-
-  inventory.inst:ListenForEvent("equip", fn.Inventory_OnEquip)
-  inventory.inst:ListenForEvent("itemget", fn.Inventory_OnItemGet)
-  inventory.inst:ListenForEvent("newactiveitem", fn.Inventory_OnNewActiveItem)
-
   if state.is_mastersim then
+    state.inventory = new.MasterInventory(inventory)
+
     inventory.GetNextAvailableSlot = fn.Inventory_GetNextAvailableSlot(inventory.GetNextAvailableSlot)
     inventory.Equip = fn.Inventory_Equip(inventory.Equip)
     inventory.OnSave = fn.Inventory_OnSave(inventory.OnSave)
   else
+    state.inventory = new.ClientInventory(inventory)
+
+    -- Client Mode needs custom logic for overflow containers (backpack and the like)
     local overflow = inventory:GetOverflowContainer()
-    if overflow then
-      fn.InitOverflow(inventory.inst, overflow)
-    end
+    fn.InitOverflow(overflow)
+
+    -- Client Mode cannot directly access item durability but has to use events
+    local items = inventory:GetItems()
+    fn.ListenForAllDurabilityChanges(items)
+
+    local equips = inventory:GetEquips()
+    fn.ListenForAllDurabilityChanges(equips)
   end
+end
+
+function fn.InitPlayerEvents(player)
+  player:ListenForEvent("equip", fn.Player_OnEquip)
+  player:ListenForEvent("itemget", fn.Player_OnItemGet)
+  player:ListenForEvent("newactiveitem", fn.Player_OnNewActiveItem)
 end
 
 function fn.InitSaveEquipmentSlots()
@@ -1035,8 +1305,9 @@ function fn.InitSaveEquipmentSlots()
 
   AddPlayerPostInit(function(player)
     fn.OnNextCycle(function()
+      -- Make sure it is the current player
       if player == fn.GetPlayer() then
-        -- Only initialize for the current player
+        fn.InitPlayerEvents(player)
         fn.IfHasComponent(player, "inventory", fn.InitInventory)
       end
     end)
@@ -1057,6 +1328,8 @@ function fn.InitSaveEquipmentSlots()
       fn.UpdatePreviewsForSlot(invslot.num)
     end)
   end)
+
+  fn.InitClasses()
 end
 
 fn.InitSaveEquipmentSlots()

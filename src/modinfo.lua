@@ -57,5 +57,21 @@ configuration_options =
     },
 
     default = false
-  }
+  },
+
+  {
+    name = "disable_save_slots_key",
+    label = "Disable Save Slots Key",
+    hover = "Key that will disable saving any slots when held down while\n"..
+            "picking up items or moving them around.",
+
+    options = {
+      { description = "- none -", data = false },
+      { description = "alt", data = 400 },
+      { description = "ctrl", data = 401 },
+      { description = "shift", data = 402 },
+    },
+
+    default = false
+  },
 }

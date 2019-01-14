@@ -6,13 +6,15 @@ local setmetatable = GLOBAL.setmetatable
 local CreateEntity = GLOBAL.CreateEntity
 local TheSim = GLOBAL.TheSim
 local Prefabs = GLOBAL.Prefabs
+local TheInput = GLOBAL.TheInput
 
 local ImageButton = require("widgets/imagebutton")
 
 local config = {
   enable_previews = GetModConfigData("enable_previews"),
   allow_equip_for_space = GetModConfigData("allow_equip_for_space"),
-  reserve_saved_slots = GetModConfigData("reserve_saved_slots")
+  reserve_saved_slots = GetModConfigData("reserve_saved_slots"),
+  disable_save_slots_key = GetModConfigData("disable_save_slots_key"),
 }
 
 -- saved slot -> [item.prefab]
@@ -629,6 +631,10 @@ end
 
 function fn.MaybeSaveSlot(item, slot, container)
   if container ~= state.inventory then
+    return
+  end
+
+  if config.disable_save_slots_key and TheInput:IsKeyDown(config.disable_save_slots_key) then
     return
   end
 

@@ -74,4 +74,20 @@ configuration_options =
 
     default = false
   },
+
+  {
+    name = "apply_to_items",
+    label = "Apply To Items",
+    hover = "Save slots of these item types",
+
+    options = {
+      { description = "Equipment", data = "100" },
+      { description = "Eq. + Food", data = "110" },
+      { description = "Eq. + Healing", data = "101" },
+      { description = "Eq. + Fo. + He.", data = "111" },
+      { description = "All items", data = "all" },
+    },
+
+    default = "100"
+  },
 }

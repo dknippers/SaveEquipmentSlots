@@ -10,12 +10,8 @@ local TheInput = GLOBAL.TheInput
 
 local ImageButton = require("widgets/imagebutton")
 
-local config = {
-  enable_previews = GetModConfigData("enable_previews"),
-  allow_equip_for_space = GetModConfigData("allow_equip_for_space"),
-  reserve_saved_slots = GetModConfigData("reserve_saved_slots"),
-  disable_save_slots_key = GetModConfigData("disable_save_slots_key"),
-}
+-- Initialized in fn.InitConfig()
+local config = {}
 
 -- saved slot -> [item.prefab]
 local items = {}
@@ -389,9 +385,34 @@ function fn.HasSlot(prefab)
   return fn.GetSlot(prefab) ~= nil
 end
 
--- Specifies if item is equipment
+function fn.ApplyToItem(item)
+  local apply = config.apply_to_items
+  if apply == "all" then return true end
+
+  if apply.equipment and fn.IsEquipment(item) then return true end
+  if apply.food and fn.IsFood(item) then return true end
+  if apply.healer and fn.IsHealer(item) then return true end
+
+  return false
+end
+
 function fn.IsEquipment(item)
   return fn.GetComponent(item, "equippable") ~= nil
+end
+
+function fn.IsFood(item)
+  local edible = fn.GetComponent(item, "edible")
+  -- Ignore non-edibles or edibles only edible by Woodie
+  if not edible or edible.woodiness then return false end
+
+  local player = fn.GetPlayer()
+  local eater = player and fn.GetComponent(player, "eater")
+  if not eater then return false end
+  return eater:CanEat(item)
+end
+
+function fn.IsHealer(item)
+  return fn.GetComponent(item, "healer") ~= nil
 end
 
 function fn.GetEquipSlot(item)
@@ -444,7 +465,7 @@ function fn.Inventory_GetNextAvailableSlot(original_fn)
   return function(self, item)
     local saved_slot = fn.GetSlot(item.prefab)
 
-    if not saved_slot or not fn.IsEquipment(item) then
+    if not saved_slot or not fn.ApplyToItem(item) then
       if config.reserve_saved_slots then
         return fn.TrySkipSavedSlots(self, item, original_fn)
       else
@@ -486,7 +507,7 @@ function fn.Player_OnEquip(inst, data)
   local item = data.item
   local eslot = data.eslot
 
-  if not fn.IsEquipment(item) then
+  if not fn.ApplyToItem(item) then
     return
   end
 
@@ -576,7 +597,7 @@ function fn.ListenForDurabilityChanges(item)
     return
   end
 
-  if not fn.IsEquipment(item) then
+  if not fn.ApplyToItem(item) then
     return
   end
 
@@ -638,8 +659,8 @@ function fn.MaybeSaveSlot(item, slot, container)
     return
   end
 
-  local is_equipment, saved_slot, blocking_item, was_manually_moved = fn.GetItemMeta(item)
-  if not is_equipment then
+  local apply_to_item, saved_slot, blocking_item, was_manually_moved = fn.GetItemMeta(item)
+  if not apply_to_item then
     return
   end
 
@@ -704,7 +725,7 @@ function fn.MoveAway(item, slot, container, nextFn)
 end
 
 function fn.ShouldMove(item, slot, container)
-  local is_equipment, saved_slot, blocking_item, was_manually_moved = fn.GetItemMeta(item)
+  local apply_to_item, saved_slot, blocking_item, was_manually_moved = fn.GetItemMeta(item)
 
   if was_manually_moved then
     return false
@@ -751,12 +772,12 @@ function fn.IsDuplicateItemGetEvent(data)
 end
 
 function fn.GetItemMeta(item)
-  local is_equipment = fn.IsEquipment(item)
+  local apply_to_item = fn.ApplyToItem(item)
   local saved_slot = fn.GetSlot(item.prefab)
   local blocking_item = saved_slot and state.inventory:GetItem(saved_slot)
   local was_manually_moved = not not state.manually_moved[item.GUID]
 
-  return is_equipment, saved_slot, blocking_item, was_manually_moved
+  return apply_to_item, saved_slot, blocking_item, was_manually_moved
 end
 
 function fn.CanEquip(item)
@@ -810,7 +831,7 @@ function fn.ShouldMakeSpace(slot, blocking_item, item)
 
   local blocking_item_saved_slot = fn.GetSlot(blocking_item.prefab)
 
-  if not fn.IsEquipment(blocking_item) or blocking_item_saved_slot ~= slot then
+  if not fn.ApplyToItem(blocking_item) or blocking_item_saved_slot ~= slot then
     return true, "move"
   end
 
@@ -1124,7 +1145,7 @@ function fn.CreateClientInventory(ClientContainer)
   end
 
   function ClientInventory:FindNewSlot(item, slot, container)
-    local is_equipment, saved_slot, blocking_item, was_manually_moved = fn.GetItemMeta(item)
+    local apply_to_item, saved_slot, blocking_item, was_manually_moved = fn.GetItemMeta(item)
     if saved_slot and (saved_slot ~= slot or container ~= state.inventory)  then
       local should_move, action = fn.ShouldMakeSpace(saved_slot, blocking_item, item)
       if not blocking_item or should_move then
@@ -1132,7 +1153,7 @@ function fn.CreateClientInventory(ClientContainer)
       end
     end
 
-    if config.allow_equip_for_space and is_equipment and fn.CanEquip(item) then
+    if config.allow_equip_for_space and apply_to_item and fn.CanEquip(item) then
       return "equip", self
     end
 
@@ -1213,7 +1234,7 @@ function fn.InitOverflow(overflow)
     local item = data.item
     local slot = data.slot
 
-    if  not item or not fn.IsEquipment(item) or fn.IsLocked() or
+    if  not item or not fn.ApplyToItem(item) or fn.IsLocked() or
         not state.overflow or not state.inventory then
       return
     end
@@ -1298,6 +1319,28 @@ function fn.InitInventory(inventory)
   end
 end
 
+function fn.InitConfig()
+  local function ParseBitFlags(flags, values)
+    if #flags ~= #values or not string.find(flags, "^[01]+$") then
+      return flags
+    end
+
+    local map = {}
+    for i = 1, #flags do
+      map[values[i]] = string.sub(flags, i, i) == "1"
+    end
+    return map
+  end
+
+  config.enable_previews = GetModConfigData("enable_previews")
+  config.allow_equip_for_space = GetModConfigData("allow_equip_for_space")
+  config.reserve_saved_slots = GetModConfigData("reserve_saved_slots")
+  config.disable_save_slots_key = GetModConfigData("disable_save_slots_key")
+  config.apply_to_items = ParseBitFlags(GetModConfigData("apply_to_items"), { "equipment", "food", "healer" })
+
+  fn.DumpTable(config.apply_to_items)
+end
+
 function fn.InitPlayerEvents(player)
   player:ListenForEvent("equip", fn.Player_OnEquip)
   player:ListenForEvent("itemget", fn.Player_OnItemGet)
@@ -1336,6 +1379,7 @@ function fn.InitSaveEquipmentSlots()
   end)
 
   fn.InitClasses()
+  fn.InitConfig()
 end
 
 fn.InitSaveEquipmentSlots()

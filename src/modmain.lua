@@ -623,8 +623,6 @@ function fn.Player_OnItemGet(inst, data)
   local item = data.item
   local slot = data.slot
 
-  local is_equipment = fn.IsEquipment(item)
-
   if not state.is_mastersim then
     if fn.IsDuplicateItemGetEvent(data) then
       -- Client Mode receives some events twice (raised by client and server).
@@ -632,7 +630,7 @@ function fn.Player_OnItemGet(inst, data)
       return
     end
 
-    if is_equipment then
+    if fn.IsEquipment(item) then
       fn.ListenForDurabilityChanges(item)
     end
   end
@@ -678,50 +676,11 @@ function fn.MaybeMove(item, slot, container, nextFn)
     fn.IfFn(nextFn, slot, container)
   else
     fn.Lock()
-    fn.MoveAway(item, slot, container, function(new_slot, new_container)
+    container:MoveAway(item, slot, function(new_slot, new_container)
       fn.Unlock()
       fn.IfFn(nextFn, new_slot, new_container)
     end)
   end
-end
-
-function fn.MoveAway(item, slot, container, nextFn)
-  local new_slot, new_container = state.inventory:FindNewSlot(item, slot, container)
-  if (new_slot == nil and new_container == nil) or (new_slot == slot and new_container == container) then
-    -- Not moving
-    return fn.IfFn(nextFn, slot, container)
-  end
-
-  local function callback()
-    fn.IfFn(nextFn, new_slot, new_container)
-  end
-
-  -- Moving to new_slot, new_container.
-  -- First grab the item so our old slot is made available
-  container:Grab(slot, function()
-    if new_slot == "equip" then
-      state.inventory:EquipActiveItem(callback)
-    elseif new_slot then
-      local blocking_item = new_container:GetItem(new_slot)
-      if blocking_item then
-        fn.MoveAway(blocking_item, new_slot, new_container, function(ns, nc)
-          if ns == new_slot and nc == new_container then
-            -- If it somehow fails we just put it in our old slot, as we have already
-            -- grabbed the item from container / slot so it's available.
-            new_container:Put(new_slot, function()
-              container:Put(slot, callback)
-            end)
-          else
-            callback()
-          end
-        end)
-      else
-        new_container:Put(new_slot, callback)
-      end
-    else
-      callback()
-    end
-  end)
 end
 
 function fn.ShouldMove(item, slot, container)
@@ -982,6 +941,45 @@ function fn.CreateClientContainer()
     else
       whenFn()
     end
+  end
+
+  function ClientContainer:MoveAway(item, slot, nextFn)
+    local new_slot, new_container = state.inventory:FindNewSlot(item, slot, self)
+    if (new_slot == nil and new_container == nil) or (new_slot == slot and new_container == self) then
+      -- Not moving
+      return fn.IfFn(nextFn, slot, self)
+    end
+
+    local function callback()
+      fn.IfFn(nextFn, new_slot, new_container)
+    end
+
+    -- Moving to new_slot, new_container.
+    -- First grab the item so our old slot is made available
+    self:Grab(slot, function()
+      if new_slot == "equip" then
+        state.inventory:EquipActiveItem(callback)
+      elseif new_slot then
+        local blocking_item = new_container:GetItem(new_slot)
+        if blocking_item then
+          new_container:MoveAway(blocking_item, new_slot, function(ns, nc)
+            if ns == new_slot and nc == new_container then
+              -- If it somehow fails we just put it in our old slot, as we have already
+              -- grabbed the item from container / slot so it's available.
+              new_container:Put(new_slot, function()
+                container:Put(slot, callback)
+              end)
+            else
+              callback()
+            end
+          end)
+        else
+          new_container:Put(new_slot, callback)
+        end
+      else
+        callback()
+      end
+    end)
   end
 
   function ClientContainer:Grab(slot, nextFn)

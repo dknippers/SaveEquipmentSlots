@@ -657,11 +657,11 @@ function fn.MaybeSaveSlot(item, slot, container)
     return
   end
 
-  local apply_to_item, saved_slot, blocking_item, was_manually_moved = fn.GetItemMeta(item)
-  if not apply_to_item then
+  if not fn.ApplyToItem(item) then
     return
   end
 
+  local saved_slot, blocking_item, was_manually_moved = fn.GetItemMeta(item)
   local prefab_is_in_saved_slot = blocking_item and blocking_item.prefab == item.prefab
   local should_save_slot = not prefab_is_in_saved_slot and (was_manually_moved or not fn.HasSlot(item.prefab))
 
@@ -684,7 +684,7 @@ function fn.MaybeMove(item, slot, container, nextFn)
 end
 
 function fn.ShouldMove(item, slot, container)
-  local apply_to_item, saved_slot, blocking_item, was_manually_moved = fn.GetItemMeta(item)
+  local saved_slot, blocking_item, was_manually_moved = fn.GetItemMeta(item)
 
   if was_manually_moved then
     return false
@@ -731,12 +731,11 @@ function fn.IsDuplicateItemGetEvent(data)
 end
 
 function fn.GetItemMeta(item)
-  local apply_to_item = fn.ApplyToItem(item)
   local saved_slot = fn.GetSlot(item.prefab)
   local blocking_item = saved_slot and state.inventory:GetItem(saved_slot)
   local was_manually_moved = not not state.manually_moved[item.GUID]
 
-  return apply_to_item, saved_slot, blocking_item, was_manually_moved
+  return saved_slot, blocking_item, was_manually_moved
 end
 
 function fn.CanEquip(item)
@@ -1143,7 +1142,7 @@ function fn.CreateClientInventory(ClientContainer)
   end
 
   function ClientInventory:FindNewSlot(item, slot, container)
-    local apply_to_item, saved_slot, blocking_item, was_manually_moved = fn.GetItemMeta(item)
+    local saved_slot, blocking_item, was_manually_moved = fn.GetItemMeta(item)
     if saved_slot and (saved_slot ~= slot or container ~= state.inventory)  then
       local should_move, action = fn.ShouldMakeSpace(saved_slot, blocking_item, item)
       if not blocking_item or should_move then
@@ -1151,7 +1150,7 @@ function fn.CreateClientInventory(ClientContainer)
       end
     end
 
-    if config.allow_equip_for_space and apply_to_item and fn.CanEquip(item) then
+    if config.allow_equip_for_space and fn.CanEquip(item) then
       return "equip", self
     end
 
@@ -1335,8 +1334,6 @@ function fn.InitConfig()
   config.reserve_saved_slots = GetModConfigData("reserve_saved_slots")
   config.disable_save_slots_key = GetModConfigData("disable_save_slots_key")
   config.apply_to_items = ParseBitFlags(GetModConfigData("apply_to_items"), { "equipment", "food", "healer" })
-
-  fn.DumpTable(config.apply_to_items)
 end
 
 function fn.InitPlayerEvents(player)

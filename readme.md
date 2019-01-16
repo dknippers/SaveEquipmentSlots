@@ -1,7 +1,7 @@
 # Save Equipment Slots
 ![modicon](assets/modicon/modicon.png?raw=true "modicon")
 
-Mod for Don't Starve and DLCs Reign of Giants, Shipwrecked, and Hamlet.
+Mod for Don't Starve + all DLCs and Don't Starve Together.
 
 ## Description
 Saves the inventory slots of equipment and makes sure equipment always returns to their saved slot. If a saved slot is occupied items will be rearranged automatically to make space.
@@ -9,8 +9,13 @@ Saves the inventory slots of equipment and makes sure equipment always returns t
 ## Installation
 The mod can be installed either through Steam or manually:
 
-- Subscribe in the [Steam Workshop](https://steamcommunity.com/sharedfiles/filedetails/?id=1591337941)
-- Put the contents of `src\` in `\Steam\steamapps\common\dont_starve\mods\save-equipment-slots\`
+#### Don't Starve
+- **Steam:** Subscribe in the [Steam Workshop](https://steamcommunity.com/sharedfiles/filedetails/?id=1591337941)
+- **Manually:** Put the contents of `src\` in `\Steam\steamapps\common\dont_starve\mods\save-equipment-slots\`
+
+#### Don't Starve Together
+- **Steam:** Subscribe in the [Steam Workshop](https://steamcommunity.com/sharedfiles/filedetails/?id=1598084686)
+- **Manually:** Put the contents of `src\` in `\Steam\steamapps\common\Don't Starve Together\mods\save-equipment-slots\`
 
 ## Usage
 This YouTube video gives a quick demonstration of the mod:

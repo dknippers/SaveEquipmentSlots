@@ -1,7 +1,7 @@
 name = "Save Equipment Slots"
 description = "Saves the inventory slots of equipment items and makes sure they always return to their saved slot. If a saved slot is occupied items will be rearranged automatically to make space."
 author = "dani"
-version = "1.3.7"
+version = "1.4.0"
 forumthread = ""
 api_version = 6
 api_version_dst = 10
@@ -57,5 +57,37 @@ configuration_options =
     },
 
     default = false
-  }
+  },
+
+  {
+    name = "disable_save_slots_key",
+    label = "Disable Save Slots Key",
+    hover = "Key that will disable saving any slots when held down while\n"..
+            "picking up items or moving them around.",
+
+    options = {
+      { description = "- none -", data = false },
+      { description = "alt", data = 400 },
+      { description = "ctrl", data = 401 },
+      { description = "shift", data = 402 },
+    },
+
+    default = false
+  },
+
+  {
+    name = "apply_to_items",
+    label = "Apply To Items",
+    hover = "Save slots of these item types",
+
+    options = {
+      { description = "Equipment", data = "100" },
+      { description = "Eq. + Food", data = "110" },
+      { description = "Eq. + Healing", data = "101" },
+      { description = "Eq. + Fo. + He.", data = "111" },
+      { description = "All items", data = "all" },
+    },
+
+    default = "100"
+  },
 }

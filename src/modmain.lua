@@ -6,14 +6,13 @@ local setmetatable = GLOBAL.setmetatable
 local CreateEntity = GLOBAL.CreateEntity
 local TheSim = GLOBAL.TheSim
 local Prefabs = GLOBAL.Prefabs
+local TheInput = GLOBAL.TheInput
+local ACTIONS = GLOBAL.ACTIONS
 
 local ImageButton = require("widgets/imagebutton")
 
-local config = {
-  enable_previews = GetModConfigData("enable_previews"),
-  allow_equip_for_space = GetModConfigData("allow_equip_for_space"),
-  reserve_saved_slots = GetModConfigData("reserve_saved_slots")
-}
+-- Initialized in fn.InitConfig()
+local config = {}
 
 -- saved slot -> [item.prefab]
 local items = {}
@@ -387,9 +386,61 @@ function fn.HasSlot(prefab)
   return fn.GetSlot(prefab) ~= nil
 end
 
--- Specifies if item is equipment
+function fn.ApplyToItem(item)
+  local apply = config.apply_to_items
+  if apply == "all" then return true end
+
+  if apply.equipment and fn.IsEquipment(item) then return true end
+  if apply.food and fn.IsFood(item) then return true end
+  if apply.healer and fn.IsHealer(item) then return true end
+
+  return false
+end
+
 function fn.IsEquipment(item)
   return fn.GetComponent(item, "equippable") ~= nil
+end
+
+function fn.IsFood(item)
+  if not item then return false end
+
+  if state.is_mastersim then
+    local edible = fn.GetComponent(item, "edible")
+    if not edible then return false end
+    local player = fn.GetPlayer()
+    local eater = player and fn.GetComponent(player, "eater")
+    if not eater or type(eater.CanEat) ~= "function" then return false end
+    return eater:CanEat(item)
+  else
+    return fn.ItemHasAction(item, ACTIONS.EAT)
+  end
+end
+
+function fn.IsHealer(item)
+  if state.is_mastersim then
+    return fn.GetComponent(item, "healer") ~= nil
+  else
+    return fn.ItemHasAction(item, ACTIONS.HEAL)
+  end
+end
+
+function fn.ItemHasAction(item, target_action)
+  if not item or type(item.CollectActions) ~= "function" then
+    return false
+  end
+
+  local player = fn.GetPlayer()
+  if not player then return false end
+
+  local actions = {}
+  item:CollectActions("INVENTORY", player, actions, true)
+  for _, action in ipairs(actions) do
+    if action == target_action then
+      return true
+    end
+  end
+
+  return false
 end
 
 function fn.GetEquipSlot(item)
@@ -442,7 +493,7 @@ function fn.Inventory_GetNextAvailableSlot(original_fn)
   return function(self, item)
     local saved_slot = fn.GetSlot(item.prefab)
 
-    if not saved_slot or not fn.IsEquipment(item) then
+    if not saved_slot or not fn.ApplyToItem(item) then
       if config.reserve_saved_slots then
         return fn.TrySkipSavedSlots(self, item, original_fn)
       else
@@ -484,7 +535,7 @@ function fn.Player_OnEquip(inst, data)
   local item = data.item
   local eslot = data.eslot
 
-  if not fn.IsEquipment(item) then
+  if not fn.ApplyToItem(item) then
     return
   end
 
@@ -574,7 +625,7 @@ function fn.ListenForDurabilityChanges(item)
     return
   end
 
-  if not fn.IsEquipment(item) then
+  if not fn.ApplyToItem(item) then
     return
   end
 
@@ -600,8 +651,6 @@ function fn.Player_OnItemGet(inst, data)
   local item = data.item
   local slot = data.slot
 
-  local is_equipment = fn.IsEquipment(item)
-
   if not state.is_mastersim then
     if fn.IsDuplicateItemGetEvent(data) then
       -- Client Mode receives some events twice (raised by client and server).
@@ -609,7 +658,7 @@ function fn.Player_OnItemGet(inst, data)
       return
     end
 
-    if is_equipment then
+    if fn.IsEquipment(item) then
       fn.ListenForDurabilityChanges(item)
     end
   end
@@ -632,11 +681,15 @@ function fn.MaybeSaveSlot(item, slot, container)
     return
   end
 
-  local is_equipment, saved_slot, blocking_item, was_manually_moved = fn.GetItemMeta(item)
-  if not is_equipment then
+  if config.disable_save_slots_key and TheInput:IsKeyDown(config.disable_save_slots_key) then
     return
   end
 
+  if not fn.ApplyToItem(item) then
+    return
+  end
+
+  local saved_slot, blocking_item, was_manually_moved = fn.GetItemMeta(item)
   local prefab_is_in_saved_slot = blocking_item and blocking_item.prefab == item.prefab
   local should_save_slot = not prefab_is_in_saved_slot and (was_manually_moved or not fn.HasSlot(item.prefab))
 
@@ -651,54 +704,15 @@ function fn.MaybeMove(item, slot, container, nextFn)
     fn.IfFn(nextFn, slot, container)
   else
     fn.Lock()
-    fn.MoveAway(item, slot, container, function(new_slot, new_container)
+    container:MoveAway(item, slot, function(new_slot, new_container)
       fn.Unlock()
       fn.IfFn(nextFn, new_slot, new_container)
     end)
   end
 end
 
-function fn.MoveAway(item, slot, container, nextFn)
-  local new_slot, new_container = state.inventory:FindNewSlot(item, slot, container)
-  if (new_slot == nil and new_container == nil) or (new_slot == slot and new_container == container) then
-    -- Not moving
-    return fn.IfFn(nextFn, slot, container)
-  end
-
-  local function callback()
-    fn.IfFn(nextFn, new_slot, new_container)
-  end
-
-  -- Moving to new_slot, new_container.
-  -- First grab the item so our old slot is made available
-  container:Grab(slot, function()
-    if new_slot == "equip" then
-      state.inventory:EquipActiveItem(callback)
-    elseif new_slot then
-      local blocking_item = new_container:GetItem(new_slot)
-      if blocking_item then
-        fn.MoveAway(blocking_item, new_slot, new_container, function(ns, nc)
-          if ns == new_slot and nc == new_container then
-            -- If it somehow fails we just put it in our old slot, as we have already
-            -- grabbed the item from container / slot so it's available.
-            new_container:Put(new_slot, function()
-              container:Put(slot, callback)
-            end)
-          else
-            callback()
-          end
-        end)
-      else
-        new_container:Put(new_slot, callback)
-      end
-    else
-      callback()
-    end
-  end)
-end
-
 function fn.ShouldMove(item, slot, container)
-  local is_equipment, saved_slot, blocking_item, was_manually_moved = fn.GetItemMeta(item)
+  local saved_slot, blocking_item, was_manually_moved = fn.GetItemMeta(item)
 
   if was_manually_moved then
     return false
@@ -745,12 +759,11 @@ function fn.IsDuplicateItemGetEvent(data)
 end
 
 function fn.GetItemMeta(item)
-  local is_equipment = fn.IsEquipment(item)
   local saved_slot = fn.GetSlot(item.prefab)
   local blocking_item = saved_slot and state.inventory:GetItem(saved_slot)
   local was_manually_moved = not not state.manually_moved[item.GUID]
 
-  return is_equipment, saved_slot, blocking_item, was_manually_moved
+  return saved_slot, blocking_item, was_manually_moved
 end
 
 function fn.CanEquip(item)
@@ -804,7 +817,7 @@ function fn.ShouldMakeSpace(slot, blocking_item, item)
 
   local blocking_item_saved_slot = fn.GetSlot(blocking_item.prefab)
 
-  if not fn.IsEquipment(blocking_item) or blocking_item_saved_slot ~= slot then
+  if not fn.ApplyToItem(blocking_item) or blocking_item_saved_slot ~= slot then
     return true, "move"
   end
 
@@ -955,6 +968,45 @@ function fn.CreateClientContainer()
     else
       whenFn()
     end
+  end
+
+  function ClientContainer:MoveAway(item, slot, nextFn)
+    local new_slot, new_container = state.inventory:FindNewSlot(item, slot, self)
+    if (new_slot == nil and new_container == nil) or (new_slot == slot and new_container == self) then
+      -- Not moving
+      return fn.IfFn(nextFn, slot, self)
+    end
+
+    local function callback()
+      fn.IfFn(nextFn, new_slot, new_container)
+    end
+
+    -- Moving to new_slot, new_container.
+    -- First grab the item so our old slot is made available
+    self:Grab(slot, function()
+      if new_slot == "equip" then
+        state.inventory:EquipActiveItem(callback)
+      elseif new_slot then
+        local blocking_item = new_container:GetItem(new_slot)
+        if blocking_item then
+          new_container:MoveAway(blocking_item, new_slot, function(ns, nc)
+            if ns == new_slot and nc == new_container then
+              -- If it somehow fails we just put it in our old slot, as we have already
+              -- grabbed the item from container / slot so it's available.
+              new_container:Put(new_slot, function()
+                container:Put(slot, callback)
+              end)
+            else
+              callback()
+            end
+          end)
+        else
+          new_container:Put(new_slot, callback)
+        end
+      else
+        callback()
+      end
+    end)
   end
 
   function ClientContainer:Grab(slot, nextFn)
@@ -1118,7 +1170,7 @@ function fn.CreateClientInventory(ClientContainer)
   end
 
   function ClientInventory:FindNewSlot(item, slot, container)
-    local is_equipment, saved_slot, blocking_item, was_manually_moved = fn.GetItemMeta(item)
+    local saved_slot, blocking_item, was_manually_moved = fn.GetItemMeta(item)
     if saved_slot and (saved_slot ~= slot or container ~= state.inventory)  then
       local should_move, action = fn.ShouldMakeSpace(saved_slot, blocking_item, item)
       if not blocking_item or should_move then
@@ -1126,7 +1178,7 @@ function fn.CreateClientInventory(ClientContainer)
       end
     end
 
-    if config.allow_equip_for_space and is_equipment and fn.CanEquip(item) then
+    if config.allow_equip_for_space and fn.CanEquip(item) then
       return "equip", self
     end
 
@@ -1207,7 +1259,7 @@ function fn.InitOverflow(overflow)
     local item = data.item
     local slot = data.slot
 
-    if  not item or not fn.IsEquipment(item) or fn.IsLocked() or
+    if  not item or not fn.ApplyToItem(item) or fn.IsLocked() or
         not state.overflow or not state.inventory then
       return
     end
@@ -1292,6 +1344,26 @@ function fn.InitInventory(inventory)
   end
 end
 
+function fn.InitConfig()
+  local function ParseBitFlags(flags, values)
+    if #flags ~= #values or not string.find(flags, "^[01]+$") then
+      return flags
+    end
+
+    local map = {}
+    for i = 1, #flags do
+      map[values[i]] = string.sub(flags, i, i) == "1"
+    end
+    return map
+  end
+
+  config.enable_previews = GetModConfigData("enable_previews")
+  config.allow_equip_for_space = GetModConfigData("allow_equip_for_space")
+  config.reserve_saved_slots = GetModConfigData("reserve_saved_slots")
+  config.disable_save_slots_key = GetModConfigData("disable_save_slots_key")
+  config.apply_to_items = ParseBitFlags(GetModConfigData("apply_to_items"), { "equipment", "food", "healer" })
+end
+
 function fn.InitPlayerEvents(player)
   player:ListenForEvent("equip", fn.Player_OnEquip)
   player:ListenForEvent("itemget", fn.Player_OnItemGet)
@@ -1330,6 +1402,7 @@ function fn.InitSaveEquipmentSlots()
   end)
 
   fn.InitClasses()
+  fn.InitConfig()
 end
 
 fn.InitSaveEquipmentSlots()

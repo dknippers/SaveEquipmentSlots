@@ -7,6 +7,7 @@ local CreateEntity = GLOBAL.CreateEntity
 local TheSim = GLOBAL.TheSim
 local Prefabs = GLOBAL.Prefabs
 local TheInput = GLOBAL.TheInput
+local ACTIONS = GLOBAL.ACTIONS
 
 local ImageButton = require("widgets/imagebutton")
 
@@ -401,18 +402,45 @@ function fn.IsEquipment(item)
 end
 
 function fn.IsFood(item)
-  local edible = fn.GetComponent(item, "edible")
-  -- Ignore non-edibles or edibles only edible by Woodie
-  if not edible or edible.woodiness then return false end
+  if not item then return false end
 
-  local player = fn.GetPlayer()
-  local eater = player and fn.GetComponent(player, "eater")
-  if not eater then return false end
-  return eater:CanEat(item)
+  if state.is_mastersim then
+    local edible = fn.GetComponent(item, "edible")
+    if not edible then return false end
+    local player = fn.GetPlayer()
+    local eater = player and fn.GetComponent(player, "eater")
+    if not eater or type(eater.CanEat) ~= "function" then return false end
+    return eater:CanEat(item)
+  else
+    return fn.ItemHasAction(item, ACTIONS.EAT)
+  end
 end
 
 function fn.IsHealer(item)
-  return fn.GetComponent(item, "healer") ~= nil
+  if state.is_mastersim then
+    return fn.GetComponent(item, "healer") ~= nil
+  else
+    return fn.ItemHasAction(item, ACTIONS.HEAL)
+  end
+end
+
+function fn.ItemHasAction(item, target_action)
+  if not item or type(item.CollectActions) ~= "function" then
+    return false
+  end
+
+  local player = fn.GetPlayer()
+  if not player then return false end
+
+  local actions = {}
+  item:CollectActions("INVENTORY", player, actions, true)
+  for _, action in ipairs(actions) do
+    if action == target_action then
+      return true
+    end
+  end
+
+  return false
 end
 
 function fn.GetEquipSlot(item)

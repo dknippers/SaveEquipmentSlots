@@ -8,8 +8,13 @@ local TheSim = GLOBAL.TheSim
 local Prefabs = GLOBAL.Prefabs
 local TheInput = GLOBAL.TheInput
 local ACTIONS = GLOBAL.ACTIONS
+local CONTROLS = {
+  LB = GLOBAL.CONTROL_ROTATE_LEFT,
+  RB = GLOBAL.CONTROL_ROTATE_RIGHT,
+}
 
 local ImageButton = require("widgets/imagebutton")
+local PlayerHud = require("screens/playerhud")
 
 -- Initialized in fn.InitConfig()
 local config = {}
@@ -380,6 +385,14 @@ function fn.ClearSlot(prefab, slot)
   slots = fn.GetItemSlots()
 
   fn.UpdatePreviewsForSlot(slot)
+end
+
+function fn.ClearEntireSlot(slot)
+  if type(items[slot]) ~= "table" then return end
+
+  for i = #items[slot], 1, -1 do
+    fn.ClearSlot(items[slot][i], slot)
+  end
 end
 
 function fn.HasSlot(prefab)
@@ -1344,6 +1357,55 @@ function fn.InitInventory(inventory)
   end
 end
 
+function fn.PlayerHud_OnControl(base_fn)
+  return function(self, control, down)
+    local base_val = base_fn(self, control, down)
+
+    if base_val or not self:IsControllerInventoryOpen() then
+      return base_val
+    else
+      local is_lb = control == CONTROLS.LB
+      local is_rb = control == CONTROLS.RB
+
+      if down and state.inventorybar and (is_lb or is_rb) then
+        local is_both =
+          (is_lb and TheInput:IsControlPressed(CONTROLS.RB)) or
+          (is_rb and TheInput:IsControlPressed(CONTROLS.LB))
+
+        if is_both then
+          local active_slot = state.inventorybar.active_slot
+
+          if active_slot and active_slot.num and state.inventory then
+            local is_inventory = false
+
+            if state.is_dst and state.is_mastersim then
+              -- In DST, active_slot.container points to the inventory replica
+              -- but when we also run the Master Simulation our state.inventory.inventory
+              -- is the actual inventory, not the replica.
+              local player = fn.GetPlayer()
+              is_inventory = player and player.replica and player.replica.inventory == active_slot.container
+            else
+              is_inventory = active_slot.container == state.inventory.inventory
+            end
+
+            if is_inventory then
+              fn.ClearEntireSlot(active_slot.num)
+              return true
+            end
+          end
+        end
+      end
+
+      return false
+    end
+  end
+end
+
+function fn.InitPlayerHud()
+  if not PlayerHud then return end
+  PlayerHud.OnControl = fn.PlayerHud_OnControl(PlayerHud.OnControl)
+end
+
 function fn.InitConfig()
   local function ParseBitFlags(flags, values)
     if #flags ~= #values or not string.find(flags, "^[01]+$") then
@@ -1401,6 +1463,7 @@ function fn.InitSaveEquipmentSlots()
     end)
   end)
 
+  fn.InitPlayerHud()
   fn.InitClasses()
   fn.InitConfig()
 end

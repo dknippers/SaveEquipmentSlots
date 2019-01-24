@@ -8,8 +8,13 @@ local TheSim = GLOBAL.TheSim
 local Prefabs = GLOBAL.Prefabs
 local TheInput = GLOBAL.TheInput
 local ACTIONS = GLOBAL.ACTIONS
+local CONTROLS = {
+  LB = GLOBAL.CONTROL_ROTATE_LEFT,
+  RB = GLOBAL.CONTROL_ROTATE_RIGHT,
+}
 
 local ImageButton = require("widgets/imagebutton")
+local PlayerHud = require("screens/playerhud")
 
 -- Initialized in fn.InitConfig()
 local config = {}
@@ -382,6 +387,14 @@ function fn.ClearSlot(prefab, slot)
   fn.UpdatePreviewsForSlot(slot)
 end
 
+function fn.ClearEntireSlot(slot)
+  if type(items[slot]) ~= "table" then return end
+
+  for i = #items[slot], 1, -1 do
+    fn.ClearSlot(items[slot][i], slot)
+  end
+end
+
 function fn.HasSlot(prefab)
   return fn.GetSlot(prefab) ~= nil
 end
@@ -482,8 +495,12 @@ function fn.TrySkipSavedSlots(inventory, item, original_fn)
       end
     end
 
-    -- Try again, this time the saved slots are unblocked.
-    original_slot, original_container = original_fn(inventory, item)
+    -- When reserve saved slots is set to "If Free Slots"
+    -- we try again since there appear to be no free slots.
+    -- The previously reserved saved slots are already unblocked now.
+    if config.reserve_saved_slots == "if_free_slots" then
+      original_slot, original_container = original_fn(inventory, item)
+    end
   end
 
   return original_slot, original_container
@@ -732,7 +749,15 @@ function fn.ShouldMove(item, slot, container)
     return false
   else
     local is_in_saved_slot = container == state.inventory and items[slot] ~= nil
-    return is_in_saved_slot
+    if not is_in_saved_slot then
+      return false
+    elseif config.reserve_saved_slots == "always" then
+      return true
+    elseif config.reserve_saved_slots == "if_free_slots" then
+      -- Only move if there is a free slot available
+      local free_slot = state.inventory:GetFreeSlot() or (state.overflow and state.overflow:GetFreeSlot())
+      return free_slot ~= nil
+    end
   end
 end
 
@@ -972,41 +997,35 @@ function fn.CreateClientContainer()
 
   function ClientContainer:MoveAway(item, slot, nextFn)
     local new_slot, new_container = state.inventory:FindNewSlot(item, slot, self)
-    if (new_slot == nil and new_container == nil) or (new_slot == slot and new_container == self) then
-      -- Not moving
-      return fn.IfFn(nextFn, slot, self)
-    end
 
     local function callback()
       fn.IfFn(nextFn, new_slot, new_container)
     end
 
-    -- Moving to new_slot, new_container.
-    -- First grab the item so our old slot is made available
-    self:Grab(slot, function()
-      if new_slot == "equip" then
-        state.inventory:EquipActiveItem(callback)
-      elseif new_slot then
-        local blocking_item = new_container:GetItem(new_slot)
-        if blocking_item then
-          new_container:MoveAway(blocking_item, new_slot, function(ns, nc)
-            if ns == new_slot and nc == new_container then
-              -- If it somehow fails we just put it in our old slot, as we have already
-              -- grabbed the item from container / slot so it's available.
-              new_container:Put(new_slot, function()
-                container:Put(slot, callback)
-              end)
-            else
-              callback()
-            end
-          end)
+    local dont_move = new_slot == slot and new_container == self
+    local move_to_active = new_slot == nil and new_container == nil
+    if dont_move then
+      callback()
+    elseif move_to_active then
+      self:Grab(slot, callback)
+    else
+      -- Moving to new_slot, new_container.
+      -- First grab the item so our old slot is made available
+      self:Grab(slot, function()
+        if new_slot == "equip" then
+          state.inventory:EquipActiveItem(callback)
+        elseif new_slot then
+          local blocking_item = new_container:GetItem(new_slot)
+          if blocking_item then
+            new_container:MoveAway(blocking_item, new_slot, callback)
+          else
+            new_container:Put(new_slot, callback)
+          end
         else
-          new_container:Put(new_slot, callback)
+          callback()
         end
-      else
-        callback()
-      end
-    end)
+      end)
+    end
   end
 
   function ClientContainer:Grab(slot, nextFn)
@@ -1190,7 +1209,9 @@ function fn.CreateClientInventory(ClientContainer)
       if free_slot then
         return free_slot, state.overflow
       end
-    elseif config.reserve_saved_slots then
+    elseif config.reserve_saved_slots == "if_free_slots" then
+      -- When we were reserving saved slots only when we have free slots
+      -- we will try again at this point, as there were no free slots available
       free_slot = self:GetFreeSlot(false)
       if free_slot then
         return free_slot, self
@@ -1344,6 +1365,55 @@ function fn.InitInventory(inventory)
   end
 end
 
+function fn.PlayerHud_OnControl(base_fn)
+  return function(self, control, down)
+    local base_val = base_fn(self, control, down)
+
+    if base_val or not self:IsControllerInventoryOpen() then
+      return base_val
+    else
+      local is_lb = control == CONTROLS.LB
+      local is_rb = control == CONTROLS.RB
+
+      if down and state.inventorybar and (is_lb or is_rb) then
+        local is_both =
+          (is_lb and TheInput:IsControlPressed(CONTROLS.RB)) or
+          (is_rb and TheInput:IsControlPressed(CONTROLS.LB))
+
+        if is_both then
+          local active_slot = state.inventorybar.active_slot
+
+          if active_slot and active_slot.num and state.inventory then
+            local is_inventory = false
+
+            if state.is_dst and state.is_mastersim then
+              -- In DST, active_slot.container points to the inventory replica
+              -- but when we also run the Master Simulation our state.inventory.inventory
+              -- is the actual inventory, not the replica.
+              local player = fn.GetPlayer()
+              is_inventory = player and player.replica and player.replica.inventory == active_slot.container
+            else
+              is_inventory = active_slot.container == state.inventory.inventory
+            end
+
+            if is_inventory then
+              fn.ClearEntireSlot(active_slot.num)
+              return true
+            end
+          end
+        end
+      end
+
+      return false
+    end
+  end
+end
+
+function fn.InitPlayerHud()
+  if not PlayerHud then return end
+  PlayerHud.OnControl = fn.PlayerHud_OnControl(PlayerHud.OnControl)
+end
+
 function fn.InitConfig()
   local function ParseBitFlags(flags, values)
     if #flags ~= #values or not string.find(flags, "^[01]+$") then
@@ -1401,6 +1471,7 @@ function fn.InitSaveEquipmentSlots()
     end)
   end)
 
+  fn.InitPlayerHud()
   fn.InitClasses()
   fn.InitConfig()
 end

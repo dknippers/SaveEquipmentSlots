@@ -1,7 +1,7 @@
 name = "Save Equipment Slots"
 description = "Saves the inventory slots of equipment items and makes sure they always return to their saved slot. If a saved slot is occupied items will be rearranged automatically to make space."
 author = "dani"
-version = "1.4.0"
+version = "1.4.1"
 forumthread = ""
 api_version = 6
 api_version_dst = 10
@@ -48,12 +48,13 @@ configuration_options =
   {
     name = "reserve_saved_slots",
     label = "Reserve Saved Slots",
-    hover = "Only put new items in saved slots when there is no other alternative slot\n"..
-            "available in the inventory or backpack.",
+    hover = "Determines if saved slots will be reserved for their items\n"..
+            "and if this only happens when there are other slots available.",
 
     options = {
-      { description = "Enabled", data = true },
-      { description = "Disabled", data = false },
+      { description = "If Free Slots", data = "if_free_slots" },
+      { description = "Always", data = "always" },
+      { description = "Never", data = false },
     },
 
     default = false

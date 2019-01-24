@@ -48,12 +48,13 @@ configuration_options =
   {
     name = "reserve_saved_slots",
     label = "Reserve Saved Slots",
-    hover = "Only put new items in saved slots when there is no other alternative slot\n"..
-            "available in the inventory or backpack.",
+    hover = "Determines if saved slots will be reserved for their items\n"..
+            "and if this only happens when there are other slots available.",
 
     options = {
-      { description = "Enabled", data = true },
-      { description = "Disabled", data = false },
+      { description = "If Free Slots", data = "if_free_slots" },
+      { description = "Always", data = "always" },
+      { description = "Never", data = false },
     },
 
     default = false

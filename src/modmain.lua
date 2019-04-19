@@ -301,7 +301,11 @@ function fn.ClearTable(tbl)
 end
 
 function fn.CallOrValue(v, ...)
-  return type(v) == "function" and v(...) or v
+  if type(v) == "function" then
+    return v(...)
+  else
+    return v
+  end
 end
 
 function fn.GetComponent(o, component_name)
@@ -319,7 +323,11 @@ function fn.IfHasComponent(o, component_name, ifFn, ifNot)
   local component = fn.GetComponent(o, component_name)
 
   if component then
-    return type(ifFn) == "function" and ifFn(component) or component
+    if type(ifFn) == "function" then
+      return ifFn(component)
+    else
+      return component
+    end
   else
     return fn.CallOrValue(ifNot)
   end

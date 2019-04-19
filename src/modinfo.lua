@@ -1,7 +1,7 @@
 name = "Save Equipment Slots"
 description = "Saves the inventory slots of equipment items and makes sure they always return to their saved slot. If a saved slot is occupied items will be rearranged automatically to make space."
 author = "dani"
-version = "1.4.1"
+version = "1.4.2"
 forumthread = ""
 api_version = 6
 api_version_dst = 10

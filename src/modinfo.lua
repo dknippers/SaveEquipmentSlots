@@ -77,6 +77,20 @@ configuration_options =
   },
 
   {
+    name = "save_slots_initial_state",
+    label = "Save Slots Initial State",
+    hover = "The initial state of the Save Slots behavior.\n"..
+            "Only used when a toggle key is configured.",
+
+    options = {
+      { description = "On", data = true },
+      { description = "Off", data = false },
+    },
+
+    default = true
+  },
+
+  {
     name = "apply_to_items",
     label = "Apply To Items",
     hover = "Save slots of these item types",

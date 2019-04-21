@@ -1532,7 +1532,14 @@ function fn.InitConfig()
   config.allow_equip_for_space = GetModConfigData("allow_equip_for_space")
   config.reserve_saved_slots = GetModConfigData("reserve_saved_slots")
   config.disable_save_slots_toggle = GetModConfigData("disable_save_slots_toggle")
+  config.save_slots_initial_state = GetModConfigData("save_slots_initial_state")
   config.apply_to_items = ParseBitFlags(GetModConfigData("apply_to_items"), { "equipment", "food", "healer" })
+
+  -- Apply Save Slots initial state to the state table
+  -- Only applied when a toggle key is configured
+  if config.disable_save_slots_toggle then
+    state.disable_save_slots = not config.save_slots_initial_state
+  end
 end
 
 function fn.InitPlayerEvents(player)

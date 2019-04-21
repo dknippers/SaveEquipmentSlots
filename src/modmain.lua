@@ -14,6 +14,7 @@ local CONTROLS = {
 }
 
 local ImageButton = require("widgets/imagebutton")
+local Text = require("widgets/text")
 local PlayerHud = require("screens/playerhud")
 
 -- Initialized in fn.InitConfig()
@@ -76,7 +77,16 @@ local state = {
     items = {},
     -- Listener functions per item, key is item.GUID
     listeners = {}
-  }
+  },
+
+  -- Whether or not saving slots is currently disabled
+  disable_save_slots = false,
+
+  -- Text widget to display current status of Disable Save Slots option
+  disable_save_slots_text_widget = nil,
+
+  -- Animation callback
+  disable_save_slots_animation = nil
 }
 
 -- All functions will be stored in this table,
@@ -272,6 +282,40 @@ function fn.RefreshImageButtons()
       end
     end)
   end
+end
+
+function fn.ShowDisableStatusText(duration)
+  if not state.disable_save_slots_text_widget then
+    return
+  end
+
+  if state.disable_save_slots_animation ~= nil then
+    state.disable_save_slots_animation:Cancel()
+  end
+
+  state.disable_save_slots_text_widget:SetString("Save Slots - "..(state.disable_save_slots and "OFF" or "ON"))
+  state.disable_save_slots_text_widget:Show()
+
+  state.disable_save_slots_animation = tasker:DoTaskInTime(duration, function()
+    state.disable_save_slots_text_widget:Hide()
+    state.disable_save_slots_animation = nil
+  end)
+end
+
+function fn.InitDisableSaveSlotsStatusText()
+  if not state.inventorybar then return end
+
+  local text = Text(GLOBAL.UIFONT, 42, nil)
+  text:Hide()
+  text:SetVAlign(GLOBAL.ANCHOR_MIDDLE)
+  text:SetHAlign(GLOBAL.ANCHOR_TOP)
+  text:SetVAnchor(GLOBAL.ANCHOR_TOP)
+  text:SetHAnchor(GLOBAL.ANCHOR_MIDDLE)
+  text:SetPosition(0,-100,0)
+
+  state.inventorybar:AddChild(text)
+
+  state.disable_save_slots_text_widget = text
 end
 
 function fn.ClearPreview(prefab)
@@ -706,7 +750,7 @@ function fn.MaybeSaveSlot(item, slot, container)
     return
   end
 
-  if config.disable_save_slots_key and TheInput:IsKeyDown(config.disable_save_slots_key) then
+  if state.disable_save_slots then
     return
   end
 
@@ -1345,6 +1389,8 @@ end
 function fn.InitInventorybar(inventorybar)
   state.inventorybar = inventorybar
 
+  fn.InitDisableSaveSlotsStatusText()
+
   if type(inventorybar.Rebuild) == "function" then
     inventorybar.Rebuild = fn.Inventorybar_Rebuild(inventorybar.Rebuild)
   end
@@ -1377,49 +1423,96 @@ function fn.PlayerHud_OnControl(base_fn)
   return function(self, control, down)
     local base_val = base_fn(self, control, down)
 
-    if base_val or not self:IsControllerInventoryOpen() then
-      return base_val
-    else
-      local is_lb = control == CONTROLS.LB
-      local is_rb = control == CONTROLS.RB
+    if not base_val then
+      local handlers = {
+        -- Controller Clear Slot
+        fn.HandleControllerKey,
+      }
 
-      if down and state.inventorybar and (is_lb or is_rb) then
-        local is_both =
-          (is_lb and TheInput:IsControlPressed(CONTROLS.RB)) or
-          (is_rb and TheInput:IsControlPressed(CONTROLS.LB))
-
-        if is_both then
-          local active_slot = state.inventorybar.active_slot
-
-          if active_slot and active_slot.num and state.inventory then
-            local is_inventory = false
-
-            if state.is_dst and state.is_mastersim then
-              -- In DST, active_slot.container points to the inventory replica
-              -- but when we also run the Master Simulation our state.inventory.inventory
-              -- is the actual inventory, not the replica.
-              local player = fn.GetPlayer()
-              is_inventory = player and player.replica and player.replica.inventory == active_slot.container
-            else
-              is_inventory = active_slot.container == state.inventory.inventory
-            end
-
-            if is_inventory then
-              fn.ClearEntireSlot(active_slot.num)
-              return true
-            end
-          end
+      for _, handler in ipairs(handlers) do
+        if handler(self, control, down) then
+          return true
         end
       end
-
-      return false
     end
+
+    return base_val
+  end
+end
+
+function fn.PlayerHud_OnRawKey(base_fn)
+  return function(self, key, down)
+    local base_val = base_fn(self, key, down)
+
+    if not base_val then
+      local handlers = {
+        -- Disable Save Slots
+        fn.HandleDisableSaveSlots,
+      }
+
+      for _, handler in ipairs(handlers) do
+        if handler(self, key, down) then
+          return true
+        end
+      end
+    end
+
+    return base_val
+  end
+end
+
+function fn.HandleControllerKey(hud, control, down)
+  if not hud:IsControllerInventoryOpen() then
+    return false
+  end
+
+  local is_lb = control == CONTROLS.LB
+  local is_rb = control == CONTROLS.RB
+
+  if down and state.inventorybar and (is_lb or is_rb) then
+    local is_both =
+      (is_lb and TheInput:IsControlPressed(CONTROLS.RB)) or
+      (is_rb and TheInput:IsControlPressed(CONTROLS.LB))
+
+    if is_both then
+      local active_slot = state.inventorybar.active_slot
+
+      if active_slot and active_slot.num and state.inventory then
+        local is_inventory = false
+
+        if state.is_dst and state.is_mastersim then
+          -- In DST, active_slot.container points to the inventory replica
+          -- but when we also run the Master Simulation our state.inventory.inventory
+          -- is the actual inventory, not the replica.
+          local player = fn.GetPlayer()
+          is_inventory = player and player.replica and player.replica.inventory == active_slot.container
+        else
+          is_inventory = active_slot.container == state.inventory.inventory
+        end
+
+        if is_inventory then
+          fn.ClearEntireSlot(active_slot.num)
+          return true
+        end
+      end
+    end
+  end
+
+  return false
+end
+
+function fn.HandleDisableSaveSlots(hud, key, down)
+  if down and config.disable_save_slots_toggle and key == config.disable_save_slots_toggle and  TheInput:IsKeyDown(GLOBAL.KEY_CTRL) then
+    state.disable_save_slots = not state.disable_save_slots
+    fn.ShowDisableStatusText(3)
+    return true
   end
 end
 
 function fn.InitPlayerHud()
   if not PlayerHud then return end
   PlayerHud.OnControl = fn.PlayerHud_OnControl(PlayerHud.OnControl)
+  PlayerHud.OnRawKey = fn.PlayerHud_OnRawKey(PlayerHud.OnRawKey)
 end
 
 function fn.InitConfig()
@@ -1438,8 +1531,15 @@ function fn.InitConfig()
   config.enable_previews = GetModConfigData("enable_previews")
   config.allow_equip_for_space = GetModConfigData("allow_equip_for_space")
   config.reserve_saved_slots = GetModConfigData("reserve_saved_slots")
-  config.disable_save_slots_key = GetModConfigData("disable_save_slots_key")
+  config.disable_save_slots_toggle = GetModConfigData("disable_save_slots_toggle")
+  config.save_slots_initial_state = GetModConfigData("save_slots_initial_state")
   config.apply_to_items = ParseBitFlags(GetModConfigData("apply_to_items"), { "equipment", "food", "healer" })
+
+  -- Apply Save Slots initial state to the state table
+  -- Only applied when a toggle key is configured
+  if config.disable_save_slots_toggle then
+    state.disable_save_slots = not config.save_slots_initial_state
+  end
 end
 
 function fn.InitPlayerEvents(player)

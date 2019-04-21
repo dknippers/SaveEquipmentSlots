@@ -773,9 +773,20 @@ function fn.MaybeMove(item, slot, container, nextFn)
     fn.IfFn(nextFn, slot, container)
   else
     fn.Lock()
+
+    local active_item = state.inventory:GetActiveItem()
     container:MoveAway(item, slot, function(new_slot, new_container)
       fn.Unlock()
-      fn.IfFn(nextFn, new_slot, new_container)
+
+      local ai_container, ai_slot = state.inventory:FindItemLocation(active_item)
+      if ai_container ~= nil and ai_slot ~= nil then
+        -- Take back our previously active item
+        ai_container:Grab(ai_slot, function()
+          fn.IfFn(nextFn, new_slot, new_container)
+        end)
+      else
+        fn.IfFn(nextFn, new_slot, new_container)
+      end
     end)
   end
 end
@@ -1192,6 +1203,27 @@ function fn.CreateClientContainer()
 
   function ClientContainer:GetItem(slot)
     return self.container:GetItemInSlot(slot)
+  end
+
+  function ClientContainer:FindItemLocation(target_item)
+    if target_item == nil then
+      return nil
+    end
+
+    local numslots = self.container:GetNumSlots()
+    if numslots then
+      for slot = 1, numslots do
+        local item = self:GetItem(slot)
+        if item == target_item then
+          return self, slot
+        end
+      end
+    end
+
+    if self == state.inventory and state.overflow ~= nil then
+      -- Look in overflow
+      return state.overflow:FindItemLocation(target_item)
+    end
   end
 
   return ClientContainer

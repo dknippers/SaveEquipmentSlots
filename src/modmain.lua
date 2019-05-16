@@ -159,22 +159,43 @@ function fn.UndoReserveSavedSlots(inventory)
   end)
 end
 
-function fn.FindAtlas(prefab)
-  local prefab_data = Prefabs and Prefabs[prefab]
+function fn.GetAtlasAndImage(prefab)
+  if not prefab then
+    return nil
+  end
 
-  if prefab_data and type(prefab_data.assets) == "table" then
-    for _, asset in ipairs(prefab_data.assets) do
-      if asset.type == "ATLAS" then
-        return asset.file
+  local image = prefab..".tex"
+  local base_atlas = "images/inventoryimages.xml"
+
+  if type(TheSim.AtlasContains) == "function" then
+    -- First check the base atlas files using TheSim.AtlasContains()
+    local atlas_files = {
+      base_atlas,
+      -- Hamlet introduced a second atlas file for some reason
+      "images/inventoryimages_2.xml"
+    }
+
+     -- Check built-in atlas files
+    for i = 1, #atlas_files do
+      local atlas = atlas_files[i]
+      if TheSim:AtlasContains(atlas, image) then
+        return atlas, image
       end
     end
   end
-end
 
-function fn.GetAtlasAndImage(prefab)
-  local atlas = fn.FindAtlas(prefab) or "images/inventoryimages.xml"
-  local image = prefab..".tex"
-  return atlas, image
+  -- Go through Prefabs cache
+  local prefab_data = Prefabs and Prefabs[prefab]
+  if prefab_data and type(prefab_data.assets) == "table" then
+    for _, asset in ipairs(prefab_data.assets) do
+      if asset.type == "ATLAS" then
+        return asset.file, image
+      end
+    end
+  end
+
+  -- If we have not found it by now it should just be the base atlas
+  return base_atlas, image
 end
 
 function fn.CreateImageButton(prefab)

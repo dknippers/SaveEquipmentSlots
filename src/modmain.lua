@@ -86,7 +86,13 @@ local state = {
   disable_save_slots_text_widget = nil,
 
   -- Animation callback
-  disable_save_slots_animation = nil
+  disable_save_slots_animation = nil,
+
+  -- List of atlas files in use by the current game
+  atlas_files = {},
+
+  -- Cache of image name -> atlas file
+  atlas_cache = {},
 }
 
 -- All functions will be stored in this table,
@@ -159,26 +165,38 @@ function fn.UndoReserveSavedSlots(inventory)
   end)
 end
 
+function fn.InitAtlasFiles()
+  local prefab_source = state.is_dst and Prefabs["global"] or Prefabs["hud"]
+  if prefab_source ~= nil and type(prefab_source.assets) == "table" then
+    for _, asset in ipairs(prefab_source.assets) do
+      if asset.type == "ATLAS" and string.find(asset.file, "^images/inventoryimages[^/]*[.]xml$") then
+        table.insert(state.atlas_files, asset.file)
+      end
+    end
+  end
+end
+
 function fn.GetAtlasAndImage(prefab)
   if not prefab then
     return nil
   end
 
   local image = prefab..".tex"
-  local base_atlas = "images/inventoryimages.xml"
 
-  if type(TheSim.AtlasContains) == "function" then
-    -- First check the base atlas files using TheSim.AtlasContains()
-    local atlas_files = {
-      base_atlas,
-      -- Hamlet introduced a second atlas file for some reason
-      "images/inventoryimages_2.xml"
-    }
+  local atlas = state.atlas_cache[image]
+  if atlas ~= nil then
+    return atlas, image
+  end
 
+  -- In Hamlet and DST (as of the "Return of Them" update),
+  -- there are multiple atlas files that store inventory images.
+  -- That is the reason we now have a collection of atlas files to look through
+  if #state.atlas_files > 0 and type(TheSim.AtlasContains) == "function" then
      -- Check built-in atlas files
-    for i = 1, #atlas_files do
-      local atlas = atlas_files[i]
+    for i = 1, #state.atlas_files do
+      local atlas = state.atlas_files[i]
       if TheSim:AtlasContains(atlas, image) then
+        state.atlas_cache[image] = atlas
         return atlas, image
       end
     end
@@ -189,13 +207,14 @@ function fn.GetAtlasAndImage(prefab)
   if prefab_data and type(prefab_data.assets) == "table" then
     for _, asset in ipairs(prefab_data.assets) do
       if asset.type == "ATLAS" then
+        state.atlas_cache[image] = asset.file
         return asset.file, image
       end
     end
   end
 
-  -- If we have not found it by now it should just be the base atlas
-  return base_atlas, image
+  -- Nothing found!
+  return nil, nil
 end
 
 function fn.CreateImageButton(prefab)
@@ -1604,6 +1623,7 @@ end
 function fn.InitSaveEquipmentSlots()
   AddSimPostInit(function()
     state.is_mastersim = fn.IsMasterSim()
+    fn.InitAtlasFiles()
   end)
 
   AddPlayerPostInit(function(player)

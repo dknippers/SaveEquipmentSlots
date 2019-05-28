@@ -15,6 +15,7 @@ local CONTROLS = {
 
 local ImageButton = require("widgets/imagebutton")
 local Text = require("widgets/text")
+local DisplayNames = GLOBAL.STRINGS and GLOBAL.STRINGS.NAMES
 local PlayerHud = require("screens/playerhud")
 
 -- Initialized in fn.InitConfig()
@@ -224,14 +225,39 @@ function fn.CreateImageButton(prefab)
   end
 
   local atlas, image = fn.GetAtlasAndImage(prefab)
+
+  local image_button
   if not atlas or not image then
-    return
+    image_button = fn.CreateFallbackImageButton(prefab)
+  else
+    image_button = ImageButton(atlas, image)
+    image_button:SetScale(.8)
+    image_button.image:SetTint(1,1,1,.8)
   end
 
-  local image_button = ImageButton(atlas, image)
-  image_button:SetScale(0.9)
   image_button.Kill = fn.ImageButton_Kill(image_button.Kill, prefab)
   state.inventorybar.toprow:AddChild(image_button)
+
+  return image_button
+end
+
+function fn.GetPrefabDisplayName(prefab)
+  if not prefab or not DisplayNames or type(DisplayNames) ~= "table" then
+    return prefab
+  end
+
+  return DisplayNames[string.upper(prefab)]
+end
+
+function fn.CreateFallbackImageButton(prefab)
+  local image_button = ImageButton("images/global.xml", "square.tex")
+  image_button.image:SetTint(0,0,0,.35)
+  image_button:SetScale(.5)
+
+  local display_name = fn.GetPrefabDisplayName(prefab)
+  if display_name then
+    image_button:SetTooltip(display_name)
+  end
 
   return image_button
 end

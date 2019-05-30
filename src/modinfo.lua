@@ -28,47 +28,65 @@ for i = 0, 25 do
   }
 end
 
+-- 5% to 100% with steps of 5
+local percentage_options = {}
+for i = 1, 20 do
+  local percentage = i * 5
+  local data = percentage / 100
+  percentage_options[i] = {
+    description = percentage .. "%",
+    data = data
+  }
+end
+
 configuration_options =
 {
   {
-    name = "enable_previews",
-    label = "Slot Previews",
-    hover = "Shows a preview of the saved equipment above each inventory slot.\n"..
-            "Click a preview to clear the saved slot of that equipment.",
+    name = "apply_to_items",
+    label = "Apply To Items",
+    hover = "Configure which item types should be saved.",
 
     options = {
-      { description = "Enabled", data = true },
-      { description = "Disabled", data = false },
+      { description = "Equipment", data = "100" },
+      { description = "Eq. + Food", data = "110" },
+      { description = "Eq. + Healing", data = "101" },
+      { description = "Eq. + Fo. + He.", data = "111" },
+      { description = "All items", data = "all" },
+    },
+
+    default = "100"
+  },
+
+  {
+    name = "show_slot_icons",
+    label = "Show Slot Icons",
+    hover = "Shows an icon of a saved item above its saved slot.\n"..
+            "Click the icon to clear the saved slot of that item.",
+
+    options = {
+      { description = "Show", data = true },
+      { description = "Hide", data = false },
     },
 
     default = true
   },
 
   {
-    name = "allow_equip_for_space",
-    label = "Allow Equip For Space",
-    hover = "Allows an item to be equipped in order to make space for an incoming item.",
-    options = {
-      { description = "Enabled", data = true },
-      { description = "Disabled", data = false },
-    },
+    name = "slot_icon_opacity",
+    label = "Slot Icon Opacity",
+    hover = "Set the opacity of the slot icons.",
 
-    default = true
+    options = percentage_options,
+    default = .75
   },
 
   {
-    name = "reserve_saved_slots",
-    label = "Reserve Saved Slots",
-    hover = "Determines if saved slots will be reserved for their items\n"..
-            "and if this only happens when there are other slots available.",
+    name = "slot_icon_scale",
+    label = "Slot Icon Scale",
+    hover = "Set the scale of the slot icons.",
 
-    options = {
-      { description = "If Free Slots", data = "if_free_slots" },
-      { description = "Always", data = "always" },
-      { description = "Never", data = false },
-    },
-
-    default = false
+    options = percentage_options,
+    default = .75
   },
 
   {
@@ -94,18 +112,30 @@ configuration_options =
   },
 
   {
-    name = "apply_to_items",
-    label = "Apply To Items",
-    hover = "Save slots of these item types",
-
+    name = "allow_equip_for_space",
+    label = "Allow Equip For Space",
+    hover = "Allows an item to be equipped in order to make space for an incoming item.",
     options = {
-      { description = "Equipment", data = "100" },
-      { description = "Eq. + Food", data = "110" },
-      { description = "Eq. + Healing", data = "101" },
-      { description = "Eq. + Fo. + He.", data = "111" },
-      { description = "All items", data = "all" },
+      { description = "Enabled", data = true },
+      { description = "Disabled", data = false },
     },
 
-    default = "100"
+    default = true
   },
+
+  {
+    name = "reserve_saved_slots",
+    label = "Reserve Saved Slots",
+    hover = "Determines if saved slots will be reserved for their items\n"..
+            "and if this only happens when there are other slots available.",
+
+    options = {
+      { description = "Never", data = false },
+      { description = "If Free Slots", data = "if_free_slots" },
+      { description = "Always", data = "always" },
+    },
+
+    default = false
+  },
+
 }

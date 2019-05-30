@@ -231,8 +231,8 @@ function fn.CreateImageButton(prefab)
     image_button = fn.CreateFallbackImageButton(prefab)
   else
     image_button = ImageButton(atlas, image)
-    image_button:SetScale(.8)
-    image_button.image:SetTint(1,1,1,.8)
+    image_button:SetScale(config.slot_icon_scale)
+    image_button.image:SetTint(1,1,1, config.slot_icon_opacity)
   end
 
   image_button.Kill = fn.ImageButton_Kill(image_button.Kill, prefab)
@@ -251,8 +251,10 @@ end
 
 function fn.CreateFallbackImageButton(prefab)
   local image_button = ImageButton("images/global.xml", "square.tex")
-  image_button.image:SetTint(0,0,0,.35)
-  image_button:SetScale(.5)
+  local base_opacity = .5
+  image_button.image:SetTint(0,0,0, base_opacity * config.slot_icon_opacity)
+  local base_scale = .6
+  image_button:SetScale(base_scale * config.slot_icon_scale)
 
   local display_name = fn.GetPrefabDisplayName(prefab)
   if display_name then
@@ -279,8 +281,8 @@ function fn.OnNextCycle(onNextCycle)
   tasker:DoTaskInTime(0, onNextCycle)
 end
 
-function fn.UpdatePreviewsForSlot(slot)
-  if not config.enable_previews or not items[slot] or not state.inventorybar then
+function fn.UpdateSlotIcons(slot)
+  if not config.show_slot_icons or not items[slot] or not state.inventorybar then
     return
   end
 
@@ -319,9 +321,18 @@ function fn.UpdateImageButtonPosition(image_button, item_index, inventorybar, in
       local _, image_button_height = image_button:GetSize()
 
       if image_button_height then
-        -- Spacing between top of inventory bar and start of image button
-        local spacing = 28
-        image_button:SetPosition(invslot_pos.x, invslot_pos.y + invslot_height + spacing + (item_index - 1) * image_button_height)
+        -- Respect configured scale
+        image_button_height = image_button_height * config.slot_icon_scale
+
+        -- Offset between top of inventory bar and start of image button
+        local offset = image_button_height / 2
+        -- Vertical spacing between icons
+        local spacing = image_button_height / 5
+
+        local initial_pos_y = invslot_pos.y + invslot_height + offset
+        local delta_y = (item_index - 1) * (spacing + image_button_height)
+
+        image_button:SetPosition(invslot_pos.x, initial_pos_y + delta_y)
         if image_button.o_pos then
           -- The game itself stores some "original position"
           -- when a button is focused and updates the button's position
@@ -340,11 +351,11 @@ end
 
 function fn.RefreshImageButtons()
   for prefab, btn in pairs(state.image_buttons) do
-    fn.ClearPreview(prefab)
+    fn.ClearSlotIcon(prefab)
     fn.OnNextCycle(function()
       local slot = fn.GetSlot(prefab)
       if slot then
-        fn.UpdatePreviewsForSlot(slot)
+        fn.UpdateSlotIcons(slot)
       end
     end)
   end
@@ -384,7 +395,7 @@ function fn.InitDisableSaveSlotsStatusText()
   state.disable_save_slots_text_widget = text
 end
 
-function fn.ClearPreview(prefab)
+function fn.ClearSlotIcon(prefab)
   local image = state.image_buttons[prefab]
 
   if image then
@@ -481,7 +492,7 @@ function fn.SaveSlot(prefab, slot)
     -- Update slot table as items has been changed
   slots = fn.GetItemSlots()
 
-  fn.UpdatePreviewsForSlot(slot)
+  fn.UpdateSlotIcons(slot)
 end
 
 function fn.ClearSlot(prefab, slot)
@@ -497,12 +508,12 @@ function fn.ClearSlot(prefab, slot)
     items[slot] = nil
   end
 
-  fn.ClearPreview(prefab)
+  fn.ClearSlotIcon(prefab)
 
   -- Update slot table as items has been changed
   slots = fn.GetItemSlots()
 
-  fn.UpdatePreviewsForSlot(slot)
+  fn.UpdateSlotIcons(slot)
 end
 
 function fn.ClearEntireSlot(slot)
@@ -1626,12 +1637,14 @@ function fn.InitConfig()
     return map
   end
 
-  config.enable_previews = GetModConfigData("enable_previews")
+  config.apply_to_items = ParseBitFlags(GetModConfigData("apply_to_items"), { "equipment", "food", "healer" })
+  config.show_slot_icons = GetModConfigData("show_slot_icons")
+  config.slot_icon_opacity = GetModConfigData("slot_icon_opacity")
+  config.slot_icon_scale = GetModConfigData("slot_icon_scale")
   config.allow_equip_for_space = GetModConfigData("allow_equip_for_space")
   config.reserve_saved_slots = GetModConfigData("reserve_saved_slots")
   config.disable_save_slots_toggle = GetModConfigData("disable_save_slots_toggle")
   config.save_slots_initial_state = GetModConfigData("save_slots_initial_state")
-  config.apply_to_items = ParseBitFlags(GetModConfigData("apply_to_items"), { "equipment", "food", "healer" })
 
   -- Apply Save Slots initial state to the state table
   -- Only applied when a toggle key is configured
@@ -1674,7 +1687,7 @@ function fn.InitSaveEquipmentSlots()
 
   AddClassPostConstruct("widgets/invslot", function(invslot)
     fn.OnNextCycle(function()
-      fn.UpdatePreviewsForSlot(invslot.num)
+      fn.UpdateSlotIcons(invslot.num)
     end)
   end)
 

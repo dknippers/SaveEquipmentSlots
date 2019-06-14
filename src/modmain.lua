@@ -1,10 +1,12 @@
 -- Lua built-ins that are only accessible through GLOBAL
 local require = GLOBAL.require
 local setmetatable = GLOBAL.setmetatable
+local unpack = GLOBAL.unpack
 
 -- DS globals
 local CreateEntity = GLOBAL.CreateEntity
 local TheSim = GLOBAL.TheSim
+local Ents = GLOBAL.Ents
 local Prefabs = GLOBAL.Prefabs
 local TheInput = GLOBAL.TheInput
 local ACTIONS = GLOBAL.ACTIONS
@@ -92,8 +94,8 @@ local state = {
   -- List of atlas files in use by the current game
   atlas_files = {},
 
-  -- Cache of image name -> atlas file
-  atlas_cache = {},
+  -- Cache of prefab name -> { atlas, image } of icon
+  atlas_image_cache = {}
 }
 
 -- All functions will be stored in this table,
@@ -182,13 +184,68 @@ function fn.GetAtlasAndImage(prefab)
     return nil
   end
 
-  local image = prefab..".tex"
-
-  local atlas = state.atlas_cache[image]
-  if atlas ~= nil then
+  local atlas, image = unpack(state.atlas_image_cache[prefab] or {})
+  if atlas and image then
     return atlas, image
   end
 
+  if state.is_mastersim then
+    -- Our preferred way is to simply get the atlas + image
+    -- from a spawned instance of the prefab
+    atlas, image =  fn.FromSpawnedPrefab(prefab, function(spawn)
+      local inventoryitem = fn.GetComponent(spawn, "inventoryitem", state.is_dst)
+      if inventoryitem then
+        return inventoryitem:GetAtlas(), inventoryitem:GetImage()
+      end
+    end)
+  end
+
+  if not atlas or not image then
+    -- If the above method failed or we are in DST client mode:
+    -- determine atlas and image in a slightly less accurate way using
+    -- the global Prefabs-cache which also contains atlas files and images
+
+    -- First try: default prefab image
+    image = prefab..".tex"
+    atlas = fn.GetPrefabAtlas(prefab, image)
+
+    if not image or not atlas then
+      -- Second try: alternative image name
+      image = fn.GetPrefabAltImage(prefab)
+      atlas = fn.GetPrefabAtlas(prefab, image)
+    end
+  end
+
+  if atlas and image then
+    state.atlas_image_cache[prefab] = { atlas, image }
+  end
+
+  return atlas, image
+end
+
+function fn.FromSpawnedPrefab(prefab, value_fn)
+  local guid = TheSim:SpawnPrefab(prefab)
+  local spawn = Ents[guid]
+  if spawn then
+    local value = {value_fn(spawn)}
+    spawn:Remove()
+    spawn = nil
+    return unpack(value)
+  end
+end
+
+function fn.GetPrefabAltImage(prefab)
+  -- Some prefabs declare 1 or more INV_IMAGE assets,
+  -- which are alternative image names for the prefab.
+  -- We simply pick the first one.
+  return fn.FindPrefabAsset(prefab, function(asset)
+    if asset.type == "INV_IMAGE" then
+      return asset.file..".tex"
+    end
+  end)
+end
+
+function fn.GetPrefabAtlas(prefab, image)
   -- In Hamlet and DST (as of the "Return of Them" update),
   -- there are multiple atlas files that store inventory images.
   -- That is the reason we now have a collection of atlas files to look through
@@ -197,25 +254,43 @@ function fn.GetAtlasAndImage(prefab)
     for i = 1, #state.atlas_files do
       local atlas = state.atlas_files[i]
       if TheSim:AtlasContains(atlas, image) then
-        state.atlas_cache[image] = atlas
-        return atlas, image
+        return atlas
       end
     end
   end
 
-  -- Go through Prefabs cache
+  -- Check the Prefab assets for an atlas file,
+  -- this is used by mod weapons
+  return fn.FindPrefabAsset(prefab, function(asset)
+    if asset.type == "ATLAS" then
+      return asset.file
+    end
+  end)
+end
+
+function fn.FindPrefabAsset(prefab, asset_fn)
+  local results = fn.FindPrefabAssets(prefab, asset_fn, 1)
+  return results[1]
+end
+
+function fn.FindPrefabAssets(prefab, asset_fn, max_results)
+  local assets = {}
+
   local prefab_data = Prefabs and Prefabs[prefab]
   if prefab_data and type(prefab_data.assets) == "table" then
     for _, asset in ipairs(prefab_data.assets) do
-      if asset.type == "ATLAS" then
-        state.atlas_cache[image] = asset.file
-        return asset.file, image
+      local result = asset_fn(asset)
+      if result then
+        table.insert(assets, result)
+      end
+
+      if type(max_results) == "number" and #assets == max_results then
+        break
       end
     end
   end
 
-  -- Nothing found!
-  return nil, nil
+  return assets
 end
 
 function fn.CreateImageButton(prefab)
@@ -429,12 +504,11 @@ function fn.CallOrValue(v, ...)
   end
 end
 
-function fn.GetComponent(o, component_name)
+function fn.GetComponent(o, component_name, get_replica)
   if o then
-    if state.is_mastersim then
+    if state.is_mastersim and not get_replica then
       return o.components and o.components[component_name]
     else
-      -- non mastersims only interact with the replica
       return o.replica and o.replica[component_name]
     end
   end

@@ -201,18 +201,26 @@ function fn.GetAtlasAndImage(prefab)
   end
 
   if not atlas or not image then
-    -- If the above method failed or we are in DST client mode:
-    -- determine atlas and image in a slightly less accurate way using
-    -- the global Prefabs-cache which also contains atlas files and images
+    if not state.is_mastersim then
+      -- If the above method failed and we are in DST client mode:
+      -- Check the inventory for the item and read atlas and image from there
+      -- as we cannot use SpawnPrefab there this is the alternative.
+      atlas, image = fn.GetAtlasAndImageFromInventoryItem(prefab)
+    end
 
-    -- First try: default prefab image
-    image = prefab..".tex"
-    atlas = fn.GetPrefabAtlas(prefab, image)
-
-    if not image or not atlas then
-      -- Second try: alternative image name
-      image = fn.GetPrefabAltImage(prefab)
+    if not atlas or not image then
+      -- If we still have not found it by now, determine the atlas and image
+      -- in a slightly less accurate way using the global Prefabs-cache
+      -- which also contains atlas files and images
+      -- First try: default prefab image
+      image = prefab..".tex"
       atlas = fn.GetPrefabAtlas(prefab, image)
+
+      if not image or not atlas then
+        -- Second try: alternative image name
+        image = fn.GetPrefabAltImage(prefab)
+        atlas = fn.GetPrefabAtlas(prefab, image)
+      end
     end
   end
 
@@ -232,6 +240,27 @@ function fn.FromSpawnedPrefab(prefab, value_fn)
     spawn = nil
     return unpack(value)
   end
+end
+
+function fn.GetAtlasAndImageFromInventoryItem(prefab)
+  if not state.inventory then
+    return nil
+  end
+
+  local item = state.inventory:FindItem(function(possible)
+    return possible and possible.prefab == prefab
+  end)
+
+  if not item then
+    return nil
+  end
+
+  local inventoryitem = fn.GetComponent(item, "inventoryitem", state.is_dst)
+  if not inventoryitem then
+    return nil
+  end
+
+  return inventoryitem:GetAtlas(), inventoryitem:GetImage()
 end
 
 function fn.GetPrefabAltImage(prefab)
@@ -1379,6 +1408,27 @@ function fn.CreateClientContainer()
     if self == state.inventory and state.overflow ~= nil then
       -- Look in overflow
       return state.overflow:FindItemLocation(target_item)
+    end
+  end
+
+  function ClientContainer:FindItem(predicate)
+    if predicate == nil then
+      return nil
+    end
+
+    local numslots = self.container:GetNumSlots()
+    if numslots then
+      for slot = 1, numslots do
+        local item = self:GetItem(slot)
+        if predicate(item) then
+          return item
+        end
+      end
+    end
+
+    if self == state.inventory and state.overflow ~= nil then
+      -- Look in overflow
+      return state.overflow:FindItem(predicate)
     end
   end
 

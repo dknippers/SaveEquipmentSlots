@@ -246,6 +246,10 @@ function fn.GetPrefabAltImage(prefab)
 end
 
 function fn.GetPrefabAtlas(prefab, image)
+  if not prefab or not image then
+    return nil
+  end
+
   -- In Hamlet and DST (as of the "Return of Them" update),
   -- there are multiple atlas files that store inventory images.
   -- That is the reason we now have a collection of atlas files to look through
@@ -253,6 +257,7 @@ function fn.GetPrefabAtlas(prefab, image)
      -- Check built-in atlas files
     for i = 1, #state.atlas_files do
       local atlas = state.atlas_files[i]
+
       if TheSim:AtlasContains(atlas, image) then
         return atlas
       end

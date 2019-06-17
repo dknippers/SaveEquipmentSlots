@@ -7,7 +7,6 @@ local unpack = GLOBAL.unpack
 local CreateEntity = GLOBAL.CreateEntity
 local TheSim = GLOBAL.TheSim
 local Ents = GLOBAL.Ents
-local Prefabs = GLOBAL.Prefabs
 local TheInput = GLOBAL.TheInput
 local ACTIONS = GLOBAL.ACTIONS
 local CONTROLS = {
@@ -91,9 +90,6 @@ local state = {
   -- Animation callback
   disable_save_slots_animation = nil,
 
-  -- List of atlas files in use by the current game
-  atlas_files = {},
-
   -- Cache of prefab name -> { atlas, image } of icon
   atlas_image_cache = {}
 }
@@ -168,17 +164,6 @@ function fn.UndoReserveSavedSlots(inventory)
   end)
 end
 
-function fn.InitAtlasFiles()
-  local prefab_source = state.is_dst and Prefabs["global"] or Prefabs["hud"]
-  if prefab_source ~= nil and type(prefab_source.assets) == "table" then
-    for _, asset in ipairs(prefab_source.assets) do
-      if asset.type == "ATLAS" and string.find(asset.file, "^images/inventoryimages[^/]*[.]xml$") then
-        table.insert(state.atlas_files, asset.file)
-      end
-    end
-  end
-end
-
 function fn.GetAtlasAndImage(prefab)
   if not prefab then
     return nil
@@ -189,40 +174,13 @@ function fn.GetAtlasAndImage(prefab)
     return atlas, image
   end
 
-  if state.is_mastersim then
-    -- Our preferred way is to simply get the atlas + image
-    -- from a spawned instance of the prefab
-    atlas, image =  fn.FromSpawnedPrefab(prefab, function(spawn)
-      local inventoryitem = fn.GetComponent(spawn, "inventoryitem", state.is_dst)
-      if inventoryitem then
-        return inventoryitem:GetAtlas(), inventoryitem:GetImage()
-      end
-    end)
-  end
-
-  if not atlas or not image then
-    if not state.is_mastersim then
-      -- If the above method failed and we are in DST client mode:
-      -- Check the inventory for the item and read atlas and image from there
-      -- as we cannot use SpawnPrefab there this is the alternative.
-      atlas, image = fn.GetAtlasAndImageFromInventoryItem(prefab)
+  -- Atlas and image will be read from a spawned instance of the prefab.
+  atlas, image = fn.FromSpawnedPrefab(prefab, function(spawn)
+    local inventoryitem = fn.GetComponent(spawn, "inventoryitem", state.is_dst)
+    if inventoryitem then
+      return inventoryitem:GetAtlas(), inventoryitem:GetImage()
     end
-
-    if not atlas or not image then
-      -- If we still have not found it by now, determine the atlas and image
-      -- in a slightly less accurate way using the global Prefabs-cache
-      -- which also contains atlas files and images
-      -- First try: default prefab image
-      image = prefab..".tex"
-      atlas = fn.GetPrefabAtlas(prefab, image)
-
-      if not image or not atlas then
-        -- Second try: alternative image name
-        image = fn.GetPrefabAltImage(prefab)
-        atlas = fn.GetPrefabAtlas(prefab, image)
-      end
-    end
-  end
+  end)
 
   if atlas and image then
     state.atlas_image_cache[prefab] = { atlas, image }
@@ -232,99 +190,30 @@ function fn.GetAtlasAndImage(prefab)
 end
 
 function fn.FromSpawnedPrefab(prefab, value_fn)
-  local guid = TheSim:SpawnPrefab(prefab)
-  local spawn = Ents[guid]
-  if spawn then
-    local value = {value_fn(spawn)}
-    spawn:Remove()
-    spawn = nil
-    return unpack(value)
-  end
-end
-
-function fn.GetAtlasAndImageFromInventoryItem(prefab)
-  if not state.inventory then
-    return nil
-  end
-
-  local item = state.inventory:FindItem(function(possible)
-    return possible and possible.prefab == prefab
-  end)
-
-  if not item then
-    return nil
-  end
-
-  local inventoryitem = fn.GetComponent(item, "inventoryitem", state.is_dst)
-  if not inventoryitem then
-    return nil
-  end
-
-  return inventoryitem:GetAtlas(), inventoryitem:GetImage()
-end
-
-function fn.GetPrefabAltImage(prefab)
-  -- Some prefabs declare 1 or more INV_IMAGE assets,
-  -- which are alternative image names for the prefab.
-  -- We simply pick the first one.
-  return fn.FindPrefabAsset(prefab, function(asset)
-    if asset.type == "INV_IMAGE" then
-      return asset.file..".tex"
+  -- Only the Master Sim can spawn full prefabs,
+  -- which we will emulate for DST Client Mode using
+  -- fn.AsMasterSim().
+  return fn.AsMasterSim(function()
+    local guid = TheSim:SpawnPrefab(prefab)
+    local spawn = Ents[guid]
+    if spawn then
+      local value = {value_fn(spawn)}
+      spawn:Remove()
+      spawn = nil
+      return unpack(value)
     end
   end)
 end
 
-function fn.GetPrefabAtlas(prefab, image)
-  if not prefab or not image then
-    return nil
+function fn.AsMasterSim(func)
+  if state.is_mastersim then
+    return func()
+  else
+    GLOBAL.TheWorld.ismastersim = true
+    local result = {func()}
+    GLOBAL.TheWorld.ismastersim = false
+    return unpack(result)
   end
-
-  -- In Hamlet and DST (as of the "Return of Them" update),
-  -- there are multiple atlas files that store inventory images.
-  -- That is the reason we now have a collection of atlas files to look through
-  if #state.atlas_files > 0 and type(TheSim.AtlasContains) == "function" then
-     -- Check built-in atlas files
-    for i = 1, #state.atlas_files do
-      local atlas = state.atlas_files[i]
-
-      if TheSim:AtlasContains(atlas, image) then
-        return atlas
-      end
-    end
-  end
-
-  -- Check the Prefab assets for an atlas file,
-  -- this is used by mod weapons
-  return fn.FindPrefabAsset(prefab, function(asset)
-    if asset.type == "ATLAS" then
-      return asset.file
-    end
-  end)
-end
-
-function fn.FindPrefabAsset(prefab, asset_fn)
-  local results = fn.FindPrefabAssets(prefab, asset_fn, 1)
-  return results[1]
-end
-
-function fn.FindPrefabAssets(prefab, asset_fn, max_results)
-  local assets = {}
-
-  local prefab_data = Prefabs and Prefabs[prefab]
-  if prefab_data and type(prefab_data.assets) == "table" then
-    for _, asset in ipairs(prefab_data.assets) do
-      local result = asset_fn(asset)
-      if result then
-        table.insert(assets, result)
-      end
-
-      if type(max_results) == "number" and #assets == max_results then
-        break
-      end
-    end
-  end
-
-  return assets
 end
 
 function fn.CreateImageButton(prefab)
@@ -1791,7 +1680,6 @@ end
 function fn.InitSaveEquipmentSlots()
   AddSimPostInit(function()
     state.is_mastersim = fn.IsMasterSim()
-    fn.InitAtlasFiles()
   end)
 
   AddPlayerPostInit(function(player)

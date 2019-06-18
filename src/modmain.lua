@@ -19,15 +19,6 @@ local Text = require("widgets/text")
 local DisplayNames = GLOBAL.STRINGS and GLOBAL.STRINGS.NAMES
 local PlayerHud = require("screens/playerhud")
 
--- Initialized in fn.InitConfig()
-local config = {}
-
--- saved slot -> [item.prefab]
-local items = {}
-
--- item.prefab -> saved slot
-local slots = {}
-
 -- Represents an object used to occupy an inventory slot temporarily
 -- when we are moving items around
 local OCCUPIED = { components = {} }
@@ -40,6 +31,15 @@ local tasker = CreateEntity()
 
 -- Table to hold all local state of this mod.
 local state = {
+  -- Initialized in fn.InitConfig()
+  config = {},
+
+  -- saved slot -> [item.prefab]
+  items = {},
+
+  -- item.prefab -> saved slot
+  slots = {},
+
   -- item.prefab -> image button widget of item
   image_buttons = {},
 
@@ -130,7 +130,7 @@ end
 function fn.GetItemSlots()
   local slots = {}
 
-  for slot, prefabs in pairs(items) do
+  for slot, prefabs in pairs(state.items) do
     for _, prefab in ipairs(prefabs) do
       slots[prefab] = slot
     end
@@ -140,7 +140,7 @@ function fn.GetItemSlots()
 end
 
 function fn.EachSavedSlot(callback)
-  for slot, prefabs in pairs(items) do
+  for slot, prefabs in pairs(state.items) do
     if #prefabs > 0 then
       callback(slot)
     end
@@ -199,7 +199,6 @@ function fn.FromSpawnedPrefab(prefab, value_fn)
     if spawn then
       local value = {value_fn(spawn)}
       spawn:Remove()
-      spawn = nil
       return unpack(value)
     end
   end)
@@ -229,8 +228,8 @@ function fn.CreateImageButton(prefab)
     image_button = fn.CreateFallbackImageButton(prefab)
   else
     image_button = ImageButton(atlas, image)
-    image_button:SetScale(config.slot_icon_scale)
-    image_button.image:SetTint(1,1,1, config.slot_icon_opacity)
+    image_button:SetScale(state.config.slot_icon_scale)
+    image_button.image:SetTint(1,1,1, state.config.slot_icon_opacity)
   end
 
   image_button.Kill = fn.ImageButton_Kill(image_button.Kill, prefab)
@@ -250,9 +249,9 @@ end
 function fn.CreateFallbackImageButton(prefab)
   local image_button = ImageButton("images/global.xml", "square.tex")
   local base_opacity = .5
-  image_button.image:SetTint(0,0,0, base_opacity * config.slot_icon_opacity)
+  image_button.image:SetTint(0,0,0, base_opacity * state.config.slot_icon_opacity)
   local base_scale = .6
-  image_button:SetScale(base_scale * config.slot_icon_scale)
+  image_button:SetScale(base_scale * state.config.slot_icon_scale)
 
   local display_name = fn.GetPrefabDisplayName(prefab)
   if display_name then
@@ -280,7 +279,7 @@ function fn.OnNextCycle(onNextCycle)
 end
 
 function fn.UpdateSlotIcons(slot)
-  if not config.show_slot_icons or not items[slot] or not state.inventorybar then
+  if not state.config.show_slot_icons or not state.items[slot] or not state.inventorybar then
     return
   end
 
@@ -289,7 +288,7 @@ function fn.UpdateSlotIcons(slot)
     return
   end
 
-  for item_index, prefab in ipairs(items[slot]) do
+  for item_index, prefab in ipairs(state.items[slot]) do
     local image_button = state.image_buttons[prefab]
     if not image_button then
       image_button = fn.CreateImageButton(prefab)
@@ -305,11 +304,11 @@ function fn.UpdateSlotIcons(slot)
       fn.ClearSlot(prefab, slot)
     end)
 
-    fn.UpdateImageButtonPosition(image_button, item_index, state.inventorybar, invslot)
+    fn.UpdateImageButtonPosition(image_button, item_index, invslot)
   end
 end
 
-function fn.UpdateImageButtonPosition(image_button, item_index, inventorybar, invslot)
+function fn.UpdateImageButtonPosition(image_button, item_index, invslot)
   local invslot_pos = invslot:GetLocalPosition()
 
   if invslot_pos and invslot.bgimage then
@@ -320,7 +319,7 @@ function fn.UpdateImageButtonPosition(image_button, item_index, inventorybar, in
 
       if image_button_height then
         -- Respect configured scale
-        image_button_height = image_button_height * config.slot_icon_scale
+        image_button_height = image_button_height * state.config.slot_icon_scale
 
         -- Offset between top of inventory bar and start of image button
         local offset = image_button_height / 2
@@ -348,7 +347,7 @@ function fn.UpdateImageButtonPosition(image_button, item_index, inventorybar, in
 end
 
 function fn.RefreshImageButtons()
-  for prefab, btn in pairs(state.image_buttons) do
+  for prefab, _ in pairs(state.image_buttons) do
     fn.ClearSlotIcon(prefab)
     fn.OnNextCycle(function()
       local slot = fn.GetSlot(prefab)
@@ -402,10 +401,10 @@ function fn.ClearSlotIcon(prefab)
   end
 end
 
-function fn.RemoveFromTable(tbl, fn, one)
+function fn.RemoveFromTable(tbl, func, one)
   if type(tbl) == "table" then
     for i = #tbl, 1, -1 do
-      if fn(tbl[i]) then
+      if func(tbl[i]) then
         table.remove(tbl, i)
         if one then return end
       end
@@ -470,7 +469,7 @@ end
 
 function fn.GetSlot(prefab)
   if prefab then
-    return slots[prefab]
+    return state.slots[prefab]
   end
 end
 
@@ -480,44 +479,44 @@ function fn.SaveSlot(prefab, slot)
     fn.ClearSlot(prefab, prev_slot)
   end
 
-  if not items[slot] then
-    items[slot] = {}
+  if not state.items[slot] then
+    state.items[slot] = {}
   end
 
-  table.insert(items[slot], prefab)
+  table.insert(state.items[slot], prefab)
 
     -- Update slot table as items has been changed
-  slots = fn.GetItemSlots()
+  state.slots = fn.GetItemSlots()
 
   fn.UpdateSlotIcons(slot)
 end
 
 function fn.ClearSlot(prefab, slot)
-  if not prefab or not slot or not items[slot] then
+  if not prefab or not slot or not state.items[slot] then
     return
   end
 
   -- Remove from items
-  fn.RemoveFromTable(items[slot], function(p) return p == prefab end, true)
+  fn.RemoveFromTable(state.items[slot], function(p) return p == prefab end, true)
 
   -- Remove entire key if this was the last item
-  if #items[slot] == 0 then
-    items[slot] = nil
+  if #state.items[slot] == 0 then
+    state.items[slot] = nil
   end
 
   fn.ClearSlotIcon(prefab)
 
   -- Update slot table as items has been changed
-  slots = fn.GetItemSlots()
+  state.slots = fn.GetItemSlots()
 
   fn.UpdateSlotIcons(slot)
 end
 
 function fn.ClearEntireSlot(slot)
-  if type(items[slot]) ~= "table" then return end
+  if type(state.items[slot]) ~= "table" then return end
 
-  for i = #items[slot], 1, -1 do
-    fn.ClearSlot(items[slot][i], slot)
+  for i = #state.items[slot], 1, -1 do
+    fn.ClearSlot(state.items[slot][i], slot)
   end
 end
 
@@ -526,7 +525,7 @@ function fn.HasSlot(prefab)
 end
 
 function fn.ApplyToItem(item)
-  local apply = config.apply_to_items
+  local apply = state.config.apply_to_items
   if apply == "all" then return true end
 
   if apply.equipment and fn.IsEquipment(item) then return true end
@@ -624,7 +623,7 @@ function fn.TrySkipSavedSlots(inventory, item, original_fn)
     -- When reserve saved slots is set to "If Free Slots"
     -- we try again since there appear to be no free slots.
     -- The previously reserved saved slots are already unblocked now.
-    if config.reserve_saved_slots == "if_free_slots" then
+    if state.config.reserve_saved_slots == "if_free_slots" then
       original_slot, original_container = original_fn(inventory, item)
     end
   end
@@ -637,7 +636,7 @@ function fn.Inventory_GetNextAvailableSlot(original_fn)
     local saved_slot = fn.GetSlot(item.prefab)
 
     if not saved_slot or not fn.ApplyToItem(item) then
-      if config.reserve_saved_slots then
+      if state.config.reserve_saved_slots then
         return fn.TrySkipSavedSlots(self, item, original_fn)
       else
         return original_fn(self, item)
@@ -651,7 +650,7 @@ function fn.Inventory_GetNextAvailableSlot(original_fn)
     local made_space = state.inventory:MakeSpace(saved_slot, item)
 
     if not made_space then
-      if config.reserve_saved_slots then
+      if state.config.reserve_saved_slots then
         return fn.TrySkipSavedSlots(self, item, original_fn)
       else
         -- Let the game decide where to put the new equipment.
@@ -674,9 +673,8 @@ function fn.Inventory_Equip(original_fn)
   end
 end
 
-function fn.Player_OnEquip(inst, data)
+function fn.Player_OnEquip(_, data)
   local item = data.item
-  local eslot = data.eslot
 
   if not fn.ApplyToItem(item) then
     return
@@ -729,7 +727,9 @@ function fn.DumpTable(tbl, levels, prefix)
     return
   end
 
-  local levels = levels or 2
+  if not levels then
+    levels = 2
+  end
 
   if levels < 1 then
     -- prevent endless loops on recursive tables
@@ -772,7 +772,7 @@ function fn.ListenForDurabilityChanges(item)
     return
   end
 
-  local function listener(inst, data)
+  local function listener(_, data)
     if data and data.percent then
       state.durability.items[key] = data.percent
     end
@@ -790,7 +790,7 @@ function fn.ListenForDurabilityChanges(item)
   end)
 end
 
-function fn.Player_OnItemGet(inst, data)
+function fn.Player_OnItemGet(_, data)
   local item = data.item
   local slot = data.slot
 
@@ -832,7 +832,7 @@ function fn.MaybeSaveSlot(item, slot, container)
     return
   end
 
-  local saved_slot, blocking_item, was_manually_moved = fn.GetItemMeta(item)
+  local _, blocking_item, was_manually_moved = fn.GetItemMeta(item)
   local prefab_is_in_saved_slot = blocking_item and blocking_item.prefab == item.prefab
   local should_save_slot = not prefab_is_in_saved_slot and (was_manually_moved or not fn.HasSlot(item.prefab))
 
@@ -875,22 +875,22 @@ function fn.ShouldMove(item, slot, container)
       return false
     end
 
-    local should_move_blocking_item, action = fn.ShouldMakeSpace(saved_slot, blocking_item, item)
+    local should_move_blocking_item, _ = fn.ShouldMakeSpace(saved_slot, blocking_item, item)
     if not blocking_item or should_move_blocking_item then
       return true
     end
   end
 
   -- All other cases: only move when reserving a saved slot
-  if not config.reserve_saved_slots then
+  if not state.config.reserve_saved_slots then
     return false
   else
-    local is_in_saved_slot = container == state.inventory and items[slot] ~= nil
+    local is_in_saved_slot = container == state.inventory and state.items[slot] ~= nil
     if not is_in_saved_slot then
       return false
-    elseif config.reserve_saved_slots == "always" then
+    elseif state.config.reserve_saved_slots == "always" then
       return true
-    elseif config.reserve_saved_slots == "if_free_slots" then
+    elseif state.config.reserve_saved_slots == "if_free_slots" then
       -- Only move if there is a free slot available
       local free_slot = state.inventory:GetFreeSlot() or (state.overflow and state.overflow:GetFreeSlot())
       return free_slot ~= nil
@@ -947,8 +947,8 @@ function fn.Inventory_OnLoad(original_fn)
     original_fn(self, data, newents)
 
     if data.save_equipment_slots then
-      items = data.save_equipment_slots
-      slots = fn.GetItemSlots()
+      state.items = data.save_equipment_slots
+      state.slots = fn.GetItemSlots()
     end
   end
 end
@@ -956,7 +956,7 @@ end
 function fn.Inventory_OnSave(original_fn)
   return function(self)
     local data = original_fn(self)
-    data.save_equipment_slots = items
+    data.save_equipment_slots = state.items
     return data
   end
 end
@@ -984,7 +984,7 @@ function fn.ShouldMakeSpace(slot, blocking_item, item)
   end
 
   local equip_blocking_item =
-    config.allow_equip_for_space and
+    state.config.allow_equip_for_space and
     fn.CanEquip(blocking_item)
 
   local move_blocking_item =
@@ -1170,7 +1170,6 @@ function fn.CreateClientContainer()
 
     self:WhenNotBusy(function()
       state.inventory:WhenNotBusy(function()
-        local item = self:GetItem(slot)
         local active_item = state.inventory:GetActiveItem()
 
         if active_item then
@@ -1191,7 +1190,6 @@ function fn.CreateClientContainer()
     self:WhenNotBusy(function()
       state.inventory:WhenNotBusy(function()
         local item = self:GetItem(slot)
-        local active_item = state.inventory:GetActiveItem()
 
         if item then
           self.container:SwapActiveItemWithSlot(slot)
@@ -1368,19 +1366,19 @@ function fn.CreateClientInventory(ClientContainer)
   end
 
   function ClientInventory:FindNewSlot(item, slot, container)
-    local saved_slot, blocking_item, was_manually_moved = fn.GetItemMeta(item)
+    local saved_slot, blocking_item, _ = fn.GetItemMeta(item)
     if saved_slot and (saved_slot ~= slot or container ~= state.inventory)  then
-      local should_move, action = fn.ShouldMakeSpace(saved_slot, blocking_item, item)
+      local should_move, _ = fn.ShouldMakeSpace(saved_slot, blocking_item, item)
       if not blocking_item or should_move then
         return saved_slot, self
       end
     end
 
-    if config.allow_equip_for_space and fn.CanEquip(item) then
+    if state.config.allow_equip_for_space and fn.CanEquip(item) then
       return "equip", self
     end
 
-    local free_slot = self:GetFreeSlot(config.reserve_saved_slots)
+    local free_slot = self:GetFreeSlot(state.config.reserve_saved_slots)
     if free_slot then
       return free_slot, self
     elseif state.overflow then
@@ -1388,7 +1386,7 @@ function fn.CreateClientInventory(ClientContainer)
       if free_slot then
         return free_slot, state.overflow
       end
-    elseif config.reserve_saved_slots == "if_free_slots" then
+    elseif state.config.reserve_saved_slots == "if_free_slots" then
       -- When we were reserving saved slots only when we have free slots
       -- we will try again at this point, as there were no free slots available
       free_slot = self:GetFreeSlot(false)
@@ -1414,7 +1412,7 @@ function fn.CreateClientInventory(ClientContainer)
     local numslots = self.inventory:GetNumSlots()
     if numslots then
       for slot = 1, numslots do
-        if not skip_saved_slots or not items[slot] then
+        if not skip_saved_slots or not state.items[slot] then
           local item = self:GetItem(slot)
           if not item then
             return slot
@@ -1455,7 +1453,7 @@ function fn.InitOverflow(overflow)
 
   local eslot = fn.GetEquipSlot(overflow.inst)
 
-  local function OnItemGet(inst, data)
+  local function OnItemGet(_, data)
     local item = data.item
     local slot = data.slot
 
@@ -1471,7 +1469,7 @@ function fn.InitOverflow(overflow)
     fn.MaybeMove(item, slot, state.overflow)
   end
 
-  local function OnUnequip(inst, data)
+  local function OnUnequip(_, data)
     if data and data.eslot == eslot then
       if type(overflow.inst.RemoveEventCallback) == "function" then
         overflow.inst:RemoveEventCallback("itemget", OnItemGet)
@@ -1486,7 +1484,7 @@ function fn.InitOverflow(overflow)
   player:ListenForEvent("unequip", OnUnequip)
 end
 
-function fn.Player_OnNewActiveItem(inst, data)
+function fn.Player_OnNewActiveItem(_, data)
   if fn.IsLocked() then
     return
   end
@@ -1605,7 +1603,7 @@ function fn.HandleControllerKey(hud, control, down)
       local active_slot = state.inventorybar.active_slot
 
       if active_slot and active_slot.num and state.inventory then
-        local is_inventory = false
+        local is_inventory
 
         if state.is_dst and state.is_mastersim then
           -- In DST, active_slot.container points to the inventory replica
@@ -1628,8 +1626,12 @@ function fn.HandleControllerKey(hud, control, down)
   return false
 end
 
-function fn.HandleDisableSaveSlots(hud, key, down)
-  if down and config.disable_save_slots_toggle and key == config.disable_save_slots_toggle and  TheInput:IsKeyDown(GLOBAL.KEY_CTRL) then
+function fn.HandleDisableSaveSlots(_, key, down)
+  if not down or not state.config.disable_save_slots_toggle then
+    return false
+  end
+
+  if key == state.config.disable_save_slots_toggle and TheInput:IsKeyDown(GLOBAL.KEY_CTRL) then
     state.disable_save_slots = not state.disable_save_slots
     fn.ShowDisableStatusText(3)
     return true
@@ -1655,19 +1657,19 @@ function fn.InitConfig()
     return map
   end
 
-  config.apply_to_items = ParseBitFlags(GetModConfigData("apply_to_items"), { "equipment", "food", "healer" })
-  config.show_slot_icons = GetModConfigData("show_slot_icons")
-  config.slot_icon_opacity = GetModConfigData("slot_icon_opacity")
-  config.slot_icon_scale = GetModConfigData("slot_icon_scale")
-  config.allow_equip_for_space = GetModConfigData("allow_equip_for_space")
-  config.reserve_saved_slots = GetModConfigData("reserve_saved_slots")
-  config.disable_save_slots_toggle = GetModConfigData("disable_save_slots_toggle")
-  config.save_slots_initial_state = GetModConfigData("save_slots_initial_state")
+  state.config.apply_to_items = ParseBitFlags(GetModConfigData("apply_to_items"), { "equipment", "food", "healer" })
+  state.config.show_slot_icons = GetModConfigData("show_slot_icons")
+  state.config.slot_icon_opacity = GetModConfigData("slot_icon_opacity")
+  state.config.slot_icon_scale = GetModConfigData("slot_icon_scale")
+  state.config.allow_equip_for_space = GetModConfigData("allow_equip_for_space")
+  state.config.reserve_saved_slots = GetModConfigData("reserve_saved_slots")
+  state.config.disable_save_slots_toggle = GetModConfigData("disable_save_slots_toggle")
+  state.config.save_slots_initial_state = GetModConfigData("save_slots_initial_state")
 
   -- Apply Save Slots initial state to the state table
   -- Only applied when a toggle key is configured
-  if config.disable_save_slots_toggle then
-    state.disable_save_slots = not config.save_slots_initial_state
+  if state.config.disable_save_slots_toggle then
+    state.disable_save_slots = not state.config.save_slots_initial_state
   end
 end
 

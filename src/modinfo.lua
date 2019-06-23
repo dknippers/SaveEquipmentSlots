@@ -40,6 +40,16 @@ for i = 1, 20 do
   }
 end
 
+local offset_options = {}
+for i = 0, 16 do
+  local data = 1 + (i * .25)
+  local extra_offset = (data - 1) * 100
+  offset_options[i+1] = {
+    description = i == 0 and "Default" or "+" .. extra_offset .. "%",
+    data = data
+  }
+end
+
 configuration_options =
 {
   {
@@ -88,6 +98,16 @@ configuration_options =
 
     options = percentage_options,
     default = .75
+  },
+
+  {
+    name = "slot_icon_offset",
+    label = "Slot Icon Vertical Offset",
+    hover = "Set the vertical offset of the slot icons\n" ..
+            "expressed as a percentage of 1 inventory slot height",
+
+    options = offset_options,
+    default = 1
   },
 
   {

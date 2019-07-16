@@ -326,7 +326,7 @@ function fn.UpdateImageButtonPosition(image_button, item_index, invslot)
         -- Vertical spacing between icons
         local spacing = image_button_height / 5
 
-        local initial_pos_y = invslot_pos.y + invslot_height + offset
+        local initial_pos_y = invslot_pos.y + (invslot_height * state.config.slot_icon_offset) + offset
         local delta_y = (item_index - 1) * (spacing + image_button_height)
 
         image_button:SetPosition(invslot_pos.x, initial_pos_y + delta_y)
@@ -1661,6 +1661,7 @@ function fn.InitConfig()
   state.config.show_slot_icons = GetModConfigData("show_slot_icons")
   state.config.slot_icon_opacity = GetModConfigData("slot_icon_opacity")
   state.config.slot_icon_scale = GetModConfigData("slot_icon_scale")
+  state.config.slot_icon_offset = GetModConfigData("slot_icon_offset")
   state.config.allow_equip_for_space = GetModConfigData("allow_equip_for_space")
   state.config.reserve_saved_slots = GetModConfigData("reserve_saved_slots")
   state.config.disable_save_slots_toggle = GetModConfigData("disable_save_slots_toggle")

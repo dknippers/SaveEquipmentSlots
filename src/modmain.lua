@@ -164,54 +164,72 @@ function fn.UndoReserveSavedSlots(inventory)
   end)
 end
 
+function fn.MaybeSetAtlasAndImageCache(prefab, compute_fn)
+  local cached = fn.GetAtlasAndImageFromCache(prefab)
+  if not cached then
+    local atlas, image = compute_fn()
+    if atlas and image then
+      fn.SetAtlasAndImageCache(prefab, atlas, image)
+    end
+  end
+end
+
+function fn.GetAtlasAndImageFromCache(prefab)
+  return unpack(state.atlas_image_cache[prefab] or {})
+end
+
+function fn.SetAtlasAndImageCache(prefab, atlas, image)
+  state.atlas_image_cache[prefab] = { atlas, image }
+end
+
+function fn.GetAtlasAndImageFromItem(item)
+  if not item then
+    return nil
+  end
+
+  local inventoryitem = fn.GetComponent(item, "inventoryitem", state.is_dst)
+  if inventoryitem then
+    return inventoryitem:GetAtlas(), inventoryitem:GetImage()
+  end
+end
+
 function fn.GetAtlasAndImage(prefab)
   if not prefab then
     return nil
   end
 
-  local atlas, image = unpack(state.atlas_image_cache[prefab] or {})
+  local atlas, image = fn.GetAtlasAndImageFromCache(prefab)
   if atlas and image then
     return atlas, image
   end
 
+  if not state.is_mastersim then
+    -- DST Client Mode cannot spawn a complete prefab so if atlas/image
+    -- are not already in the cache we will stop here.
+    -- However, every applicable item's atlas + image will be put in the cache
+    -- when it is first obtained.
+    return nil
+  end
+
   -- Atlas and image will be read from a spawned instance of the prefab.
-  atlas, image = fn.FromSpawnedPrefab(prefab, function(spawn)
-    local inventoryitem = fn.GetComponent(spawn, "inventoryitem", state.is_dst)
-    if inventoryitem then
-      return inventoryitem:GetAtlas(), inventoryitem:GetImage()
-    end
-  end)
+  atlas, image = fn.FromSpawnedPrefab(prefab, fn.GetAtlasAndImageFromItem)
 
   if atlas and image then
-    state.atlas_image_cache[prefab] = { atlas, image }
+    fn.SetAtlasAndImageCache(prefab, atlas, image)
   end
 
   return atlas, image
 end
 
+-- Spawns the given prefab and returns the value that is returned by value_fn.
+-- Note: DST Client Mode will not return a full instance (it misses many components) so use with care there.
 function fn.FromSpawnedPrefab(prefab, value_fn)
-  -- Only the Master Sim can spawn full prefabs,
-  -- which we will emulate for DST Client Mode using
-  -- fn.AsMasterSim().
-  return fn.AsMasterSim(function()
-    local guid = TheSim:SpawnPrefab(prefab)
-    local spawn = Ents[guid]
-    if spawn then
-      local value = {value_fn(spawn)}
-      spawn:Remove()
-      return unpack(value)
-    end
-  end)
-end
-
-function fn.AsMasterSim(func)
-  if state.is_mastersim then
-    return func()
-  else
-    GLOBAL.TheWorld.ismastersim = true
-    local result = {func()}
-    GLOBAL.TheWorld.ismastersim = false
-    return unpack(result)
+  local guid = TheSim:SpawnPrefab(prefab)
+  local spawn = Ents[guid]
+  if spawn then
+    local value = {value_fn(spawn)}
+    spawn:Remove()
+    return unpack(value)
   end
 end
 
@@ -803,6 +821,12 @@ function fn.Player_OnItemGet(_, data)
 
     if fn.IsEquipment(item) then
       fn.ListenForDurabilityChanges(item)
+    end
+
+    if fn.ApplyToItem(item) then
+      fn.MaybeSetAtlasAndImageCache(item.prefab, function()
+        return fn.GetAtlasAndImageFromItem(item)
+      end)
     end
   end
 

@@ -104,7 +104,7 @@ configuration_options =
     name = "slot_icon_offset",
     label = "Slot Icon Vertical Offset",
     hover = "Set the vertical offset of the slot icons\n" ..
-            "expressed as a percentage of 1 inventory slot height",
+            "expressed as a percentage of 1 inventory slot height.",
 
     options = offset_options,
     default = 1
@@ -130,6 +130,17 @@ configuration_options =
     },
 
     default = true
+  },
+
+  {
+    name = "disable_slot_icon_click_when_save_slots_off",
+    label = "Disable Slot Icon Click",
+    hover = "Controls when clicking slot icons is disabled.",
+    options = {
+      { description = "Never", data = false },
+      { description = "If Save Slots: Off", data = true },
+    },
+    default = false
   },
 
   {

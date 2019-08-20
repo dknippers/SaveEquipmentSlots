@@ -296,8 +296,18 @@ function fn.OnNextCycle(onNextCycle)
   tasker:DoTaskInTime(0, onNextCycle)
 end
 
+function fn.RenderAllSlotIcons()
+  for slot, prefabs in pairs(state.items) do
+    fn.RenderSlotIcons(slot)
+  end
+end
+
 function fn.RenderSlotIcons(slot)
-  if not state.config.show_slot_icons or not state.items[slot] or not state.inventorybar then
+  local hide_slot_icons = not state.config.show_slot_icons or (
+    state.config.hide_slot_icons_when_disabled and state.disable_save_slots
+  )
+
+  if hide_slot_icons or not state.items[slot] or not state.inventorybar then
     return
   end
 
@@ -379,6 +389,12 @@ function fn.RefreshImageButtons()
         fn.RenderSlotIcons(slot)
       end
     end)
+  end
+end
+
+function fn.ClearSlotIcons()
+  for prefab, _ in pairs(state.image_buttons) do
+    fn.ClearSlotIcon(prefab)
   end
 end
 
@@ -1670,6 +1686,14 @@ end
 function fn.ToggleDisableSaveSlots()
   state.disable_save_slots = not state.disable_save_slots
   fn.ShowDisableStatusText(3)
+
+  if state.config.hide_slot_icons_when_disabled then
+      if state.disable_save_slots then
+        fn.ClearSlotIcons()
+      else
+        fn.RenderAllSlotIcons()
+      end
+  end
 end
 
 function fn.InitPlayerHud()
@@ -1701,6 +1725,7 @@ function fn.InitConfig()
   state.config.disable_save_slots_toggle = GetModConfigData("disable_save_slots_toggle")
   state.config.save_slots_initial_state = GetModConfigData("save_slots_initial_state")
   state.config.disable_slot_icon_click_when_save_slots_off = GetModConfigData("disable_slot_icon_click_when_save_slots_off")
+  state.config.hide_slot_icons_when_disabled = GetModConfigData("hide_slot_icons_when_disabled")
 
   -- Apply Save Slots initial state to the state table
   -- Only applied when a toggle key is configured

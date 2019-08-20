@@ -144,6 +144,17 @@ configuration_options =
   },
 
   {
+    name = "hide_slot_icons_when_disabled",
+    label = "Hide Slot Icons",
+    hover = "Controls when slot icons are hidden.",
+    options = {
+      { description = "Never", data = false },
+      { description = "If Save Slots: Off", data = true },
+    },
+    default = false
+  },
+
+  {
     name = "allow_equip_for_space",
     label = "Allow Equip For Space",
     hover = "Allows an item to be equipped in order to make space for an incoming item.",

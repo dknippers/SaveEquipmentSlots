@@ -296,7 +296,7 @@ function fn.OnNextCycle(onNextCycle)
   tasker:DoTaskInTime(0, onNextCycle)
 end
 
-function fn.UpdateSlotIcons(slot)
+function fn.RenderSlotIcons(slot)
   if not state.config.show_slot_icons or not state.items[slot] or not state.inventorybar then
     return
   end
@@ -319,6 +319,12 @@ function fn.UpdateSlotIcons(slot)
     end
 
     image_button:SetOnClick(function()
+      if  state.config.disable_slot_icon_click_when_save_slots_off and
+          state.disable_save_slots then
+        -- Ignore click in this case
+        return
+      end
+
       fn.ClearSlot(prefab, slot)
     end)
 
@@ -370,7 +376,7 @@ function fn.RefreshImageButtons()
     fn.OnNextCycle(function()
       local slot = fn.GetSlot(prefab)
       if slot then
-        fn.UpdateSlotIcons(slot)
+        fn.RenderSlotIcons(slot)
       end
     end)
   end
@@ -506,7 +512,7 @@ function fn.SaveSlot(prefab, slot)
     -- Update slot table as items has been changed
   state.slots = fn.GetItemSlots()
 
-  fn.UpdateSlotIcons(slot)
+  fn.RenderSlotIcons(slot)
 end
 
 function fn.ClearSlot(prefab, slot)
@@ -527,7 +533,7 @@ function fn.ClearSlot(prefab, slot)
   -- Update slot table as items has been changed
   state.slots = fn.GetItemSlots()
 
-  fn.UpdateSlotIcons(slot)
+  fn.RenderSlotIcons(slot)
 end
 
 function fn.ClearEntireSlot(slot)
@@ -1656,10 +1662,14 @@ function fn.HandleDisableSaveSlots(_, key, down)
   end
 
   if key == state.config.disable_save_slots_toggle and TheInput:IsKeyDown(GLOBAL.KEY_CTRL) then
-    state.disable_save_slots = not state.disable_save_slots
-    fn.ShowDisableStatusText(3)
+    fn.ToggleDisableSaveSlots()
     return true
   end
+end
+
+function fn.ToggleDisableSaveSlots()
+  state.disable_save_slots = not state.disable_save_slots
+  fn.ShowDisableStatusText(3)
 end
 
 function fn.InitPlayerHud()
@@ -1690,6 +1700,7 @@ function fn.InitConfig()
   state.config.reserve_saved_slots = GetModConfigData("reserve_saved_slots")
   state.config.disable_save_slots_toggle = GetModConfigData("disable_save_slots_toggle")
   state.config.save_slots_initial_state = GetModConfigData("save_slots_initial_state")
+  state.config.disable_slot_icon_click_when_save_slots_off = GetModConfigData("disable_slot_icon_click_when_save_slots_off")
 
   -- Apply Save Slots initial state to the state table
   -- Only applied when a toggle key is configured
@@ -1731,7 +1742,7 @@ function fn.InitSaveEquipmentSlots()
 
   AddClassPostConstruct("widgets/invslot", function(invslot)
     fn.OnNextCycle(function()
-      fn.UpdateSlotIcons(invslot.num)
+      fn.RenderSlotIcons(invslot.num)
     end)
   end)
 

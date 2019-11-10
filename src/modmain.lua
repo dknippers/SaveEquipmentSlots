@@ -21,10 +21,10 @@ local PlayerHud = require("screens/playerhud")
 
 -- Represents an object used to occupy an inventory slot temporarily
 -- when we are moving items around
-local OCCUPIED = { components = {} }
+local OCCUPIED = { components = {}, HasTag = function() return false end }
 -- Another object we use to block an inventory slot, this one is used to reserve
 -- saved slots when looking for an empty inventory slot for a new item
-local RESERVED = { components = {} }
+local RESERVED = { components = {}, HasTag = function() return false end }
 
 -- entity to run tasks with, necessary to gain access to DoTaskInTime()
 local tasker = CreateEntity()

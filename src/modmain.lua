@@ -382,6 +382,12 @@ function fn.RefreshImageButtons()
   end
 end
 
+function fn.ClearSlotIcons()
+  for prefab, _ in pairs(state.image_buttons) do
+    fn.ClearSlotIcon(prefab)
+  end
+end
+
 function fn.ShowDisableStatusText(duration)
   if not state.disable_save_slots_text_widget then
     return
@@ -1111,6 +1117,22 @@ function fn.CreateMasterInventory()
     return self.inventory:GetEquippedItem(eslot)
   end
 
+  function MasterInventory:EachItem(callback)
+    if callback == nil then
+      return nil
+    end
+
+    local numslots = self.inventory:GetNumSlots()
+    if numslots then
+      for slot = 1, numslots do
+        local item = self:GetItem(slot)
+        if item ~= nil then
+          callback(item, slot)
+        end
+      end
+    end
+  end
+
   return MasterInventory
 end
 
@@ -1349,6 +1371,22 @@ function fn.CreateClientContainer()
     end
   end
 
+  function ClientContainer:EachItem(callback)
+    if callback == nil then
+      return nil
+    end
+
+    local numslots = self.container:GetNumSlots()
+    if numslots then
+      for slot = 1, numslots do
+        local item = self:GetItem(slot)
+        if item ~= nil then
+          callback(item, slot)
+        end
+      end
+    end
+  end
+
   return ClientContainer
 end
 
@@ -1572,6 +1610,11 @@ function fn.InitInventory(inventory)
     local equips = inventory:GetEquips()
     fn.ListenForAllDurabilityChanges(equips)
   end
+
+  -- DST: Save all current items to their slots
+  if state.is_dst and state.config.dst_save_items_on_spawn then
+    fn.SaveCurrentItemSlots()
+  end
 end
 
 function fn.PlayerHud_OnControl(base_fn)
@@ -1672,6 +1715,28 @@ function fn.ToggleDisableSaveSlots()
   fn.ShowDisableStatusText(3)
 end
 
+function fn.SaveCurrentItemSlots()
+  if not state.inventory then
+    return
+  end
+
+  state.items = {}
+  state.slots = {}
+
+  fn.ClearSlotIcons()
+
+  state.inventory:EachItem(function(item, slot)
+    if fn.ApplyToItem(item) and not state.slots[item.prefab] then
+      state.items[slot] = { item.prefab }
+      state.slots[item.prefab] = slot
+      fn.MaybeSetAtlasAndImageCache(item.prefab, function()
+        return fn.GetAtlasAndImageFromItem(item)
+      end)
+      fn.RenderSlotIcons(slot)
+    end
+  end)
+end
+
 function fn.InitPlayerHud()
   if not PlayerHud then return end
   PlayerHud.OnControl = fn.PlayerHud_OnControl(PlayerHud.OnControl)
@@ -1701,6 +1766,7 @@ function fn.InitConfig()
   state.config.disable_save_slots_toggle = GetModConfigData("disable_save_slots_toggle")
   state.config.save_slots_initial_state = GetModConfigData("save_slots_initial_state")
   state.config.disable_slot_icon_click_when_save_slots_off = GetModConfigData("disable_slot_icon_click_when_save_slots_off")
+  state.config.dst_save_items_on_spawn = GetModConfigData("dst_save_items_on_spawn")
 
   -- Apply Save Slots initial state to the state table
   -- Only applied when a toggle key is configured

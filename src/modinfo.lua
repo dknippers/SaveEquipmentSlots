@@ -170,4 +170,18 @@ configuration_options =
     default = false
   },
 
+  {
+    name = "dst_save_items_on_spawn",
+    label = "DST: Save Items on Spawn",
+    hover = "Saves the slots of all items in the inventory when spawned.\n "..
+            "Helps to restore saved slots when resuming or going to Caves.\n",
+
+    options = {
+      { description = "Enabled", data = true },
+      { description = "Disabled", data = false },
+    },
+
+    default = true
+  },
+
 }

@@ -1,7 +1,7 @@
 name = "Save Equipment Slots"
 description = "Saves the inventory slots of equipment items and makes sure they always return to their saved slot. If a saved slot is occupied items will be rearranged automatically to make space."
 author = "dani"
-version = "1.8.1"
+version = "1.8.2"
 forumthread = ""
 api_version = 6
 api_version_dst = 10
@@ -168,6 +168,20 @@ configuration_options =
     },
 
     default = false
+  },
+
+  {
+    name = "dst_save_items_on_spawn",
+    label = "DST: Save Items on Spawn",
+    hover = "Saves the slots of all items in the inventory when spawned.\n "..
+            "Helps to restore saved slots when resuming or going to Caves.\n",
+
+    options = {
+      { description = "Enabled", data = true },
+      { description = "Disabled", data = false },
+    },
+
+    default = true
   },
 
 }

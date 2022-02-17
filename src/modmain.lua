@@ -619,7 +619,7 @@ function fn.GetEquipSlot(item)
 end
 
 function fn.GetOverflowContainer(inventory)
-  if state.is_dst then
+  if not state.is_mastersim then
     return inventory:GetOverflowContainer()
   else
     return fn.IfHasComponent(inventory.overflow, "container")
